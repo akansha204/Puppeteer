@@ -16,10 +16,12 @@ const (
 )
 
 type Agent struct {
-	ID        string
-	PID       int
-	Status    Status
-	StartedAt time.Time
+	ID      string
+	Command string
+	Args    []string
+	PID     int
+	Status  Status
 
-	process *os.Process
+	StartedAt time.Time
+	process   *os.Process
 }
