@@ -56,11 +56,10 @@ func (m *Manager) Stop(a *Agent) error {
 }
 
 func (m *Manager) Restart(a *Agent) error {
-	if a.Status == StatusStopped || a.Status == StatusCrashed {
-		a.Status = StatusStarting
-		fmt.Print("agent restarting")
+	if err := m.Stop(a); err != nil {
+		return err
 	}
-	return nil
+	return m.Start(a)
 }
 
 func (m *Manager) GetAgents() map[string]*Agent {
