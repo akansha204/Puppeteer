@@ -58,3 +58,28 @@ func TestStopTerminatesProcess(t *testing.T) {
 		t.Fatalf("process %d is still alive after Stop", pid)
 	}
 }
+
+func TestRestartSpawnsFreshProcess(t *testing.T) {
+	m := NewManager()
+	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(a) })
+
+	if err := m.Start(a); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	oldPID := a.PID
+
+	if err := m.Restart(a); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	if processAlive(oldPID) {
+		t.Fatalf("old process %d still alive after restart", oldPID)
+	}
+	if !processAlive(a.PID) || a.PID == oldPID {
+		t.Fatalf("new process not healthy: pid=%d oldPID=%d", a.PID, oldPID)
+	}
+	if a.Status != StatusRunning {
+		t.Fatalf("status = %s, want %s", a.Status, StatusRunning)
+	}
+}
