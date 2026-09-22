@@ -1,4 +1,4 @@
-package puppeteer
+package main
 
 import "fmt"
 

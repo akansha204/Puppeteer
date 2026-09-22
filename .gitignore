@@ -1,0 +1,17 @@
+# Build output
+/bin/
+
+# Test binaries and coverage output
+*.test
+*.out
+coverage.*
+
+# Environment / secrets
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

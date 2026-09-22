@@ -12,3 +12,14 @@ Puppeteer should be able to:
 3. Observe its state
 4. Stop/restart it
 5. Manage multiple agents independently
+
+## Development
+
+Requires Go 1.26+.
+
+```sh
+make build      # compile to bin/puppeteer
+make run        # run the CLI
+make test       # run tests with the race detector
+make check      # fmt + tidy + vet + test (mirrors CI)
+```
