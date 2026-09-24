@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 	"time"
 )
 
@@ -24,4 +25,7 @@ type Agent struct {
 
 	StartedAt time.Time
 	process   *os.Process
+	cmd       *exec.Cmd
+	done      chan struct{} //closed by monitor when process dies
+	stopping  bool
 }
