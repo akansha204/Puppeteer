@@ -87,6 +87,13 @@ func (m *Manager) StatusOf(a *Agent) Status {
 	return a.Status
 }
 
+func (m *Manager) Get(id string) (*Agent, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.agents[id]
+	return a, ok
+}
+
 func (m *Manager) GetAgents() map[string]*Agent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
