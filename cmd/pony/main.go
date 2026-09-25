@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/akansha204/pony/internal/agent"
+	"github.com/akansha204/pony/internal/driver"
 )
 
 func main() {
-	mgr := agent.NewManager()
+	mgr := agent.NewManager(driver.NewProcessDriver())
 
 	defer func() {
 		for _, a := range mgr.GetAgents() {

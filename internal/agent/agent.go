@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"os"
-	"os/exec"
 	"time"
+
+	"github.com/akansha204/pony/internal/driver"
 )
 
 type AgentID string
@@ -36,8 +36,7 @@ type session struct {
 	ExitedAt   time.Time
 
 	PID      int
-	process  *os.Process
-	cmd      *exec.Cmd
+	h        *driver.Handle
 	done     chan struct{} //closed by monitor when the process dies
 	stopping bool
 }

@@ -1,23 +1,23 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
-	"os/exec"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/akansha204/pony/internal/driver"
 )
 
 type Manager struct {
 	mu     sync.Mutex
 	agents map[AgentID]*Agent
+	driver driver.Driver
 }
 
-const stopGrace = 3 * time.Second
+const stopSettle = 2 * time.Second
 
-func NewManager() *Manager {
-	return &Manager{agents: make(map[AgentID]*Agent)}
+func NewManager(d driver.Driver) *Manager {
+	return &Manager{agents: make(map[AgentID]*Agent), driver: d}
 }
 
 func (m *Manager) Start(a *Agent) error {
@@ -37,15 +37,13 @@ func (m *Manager) Start(a *Agent) error {
 	}
 	s := &session{ID: SessionID(a.ID), Generation: gen + 1, State: StateStarting}
 
-	cmd := exec.Command(a.Command, a.Args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	h, err := m.driver.Start(driver.Command{Path: a.Command, Args: a.Args})
+	if err != nil {
 		return fmt.Errorf("start agent %q: %w", a.ID, err)
 	}
 
-	s.process = cmd.Process
-	s.cmd = cmd
-	s.PID = cmd.Process.Pid
+	s.PID = h.PID
+	s.h = h
 	s.StartedAt = time.Now()
 	s.done = make(chan struct{})
 	s.State = StateRunning
@@ -65,19 +63,17 @@ func (m *Manager) Stop(a *Agent) error {
 		return nil
 	}
 	s.stopping = true
-	sd, pid := s.done, s.PID
+	sd, h := s.done, s.h
 	m.mu.Unlock()
 
-	pgid := -pid
-	if err := syscall.Kill(pgid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := m.driver.Stop(h); err != nil {
 		return fmt.Errorf("stop agent %q: %w", a.ID, err)
 	}
 
 	select {
 	case <-sd:
-	case <-time.After(stopGrace):
-		_ = syscall.Kill(pgid, syscall.SIGKILL)
-		<-sd
+	case <-time.After(stopSettle):
+		return fmt.Errorf("stop agent %q: timed out waiting for process to settle", a.ID)
 	}
 
 	return nil
@@ -152,8 +148,8 @@ func (m *Manager) GetAgents() map[AgentID]*Agent {
 }
 
 func (m *Manager) monitor(a *Agent, s *session) {
-	err := s.cmd.Wait()
-	m.finish(a, s, err)
+	res := m.driver.Wait(s.h)
+	m.finish(a, s, res.ExitErr)
 }
 
 func (m *Manager) finish(a *Agent, s *session, waitErr error) {
@@ -174,7 +170,6 @@ func (m *Manager) finish(a *Agent, s *session, waitErr error) {
 	}
 	s.ExitedAt = time.Now()
 	s.PID = 0
-	s.process = nil
-	s.cmd = nil
+	s.h = nil
 	close(s.done)
 }

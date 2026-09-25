@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akansha204/pony/internal/driver"
 )
 
 func processAlive(pid int) bool {
@@ -38,7 +40,7 @@ func waitForState(t *testing.T, m *Manager, a *Agent, want RuntimeState) {
 }
 
 func TestStartSpawnsRealProcess(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -59,7 +61,7 @@ func TestStartSpawnsRealProcess(t *testing.T) {
 }
 
 func TestStopTerminatesProcess(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -85,7 +87,7 @@ func TestStopTerminatesProcess(t *testing.T) {
 }
 
 func TestRestartSpawnsFreshProcess(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -111,7 +113,7 @@ func TestRestartSpawnsFreshProcess(t *testing.T) {
 }
 
 func TestMonitorDetectsCrash(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "boom", Command: "sh", Args: []string{"-c", "exit 1"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 	if err := m.Start(a); err != nil {
@@ -121,7 +123,7 @@ func TestMonitorDetectsCrash(t *testing.T) {
 }
 
 func TestTwoAgentsRunIndependently(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
 	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
@@ -152,7 +154,7 @@ func TestTwoAgentsRunIndependently(t *testing.T) {
 }
 
 func TestStopOneAgentDoesNotAffectOther(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
 	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
@@ -187,7 +189,7 @@ func TestStopOneAgentDoesNotAffectOther(t *testing.T) {
 }
 
 func TestRestartOneAgentDoesNotAffectOther(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
 	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
@@ -222,7 +224,7 @@ func TestRestartOneAgentDoesNotAffectOther(t *testing.T) {
 }
 
 func TestNaturalExitDoesNotAffectOther(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "alpha", Command: "sh", Args: []string{"-c", "exit 1"}}
 	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
@@ -249,7 +251,7 @@ func TestNaturalExitDoesNotAffectOther(t *testing.T) {
 }
 
 func TestDuplicateIDRejected(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "dup", Command: "sleep", Args: []string{"1000"}}
 	b := &Agent{ID: "dup", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
@@ -278,7 +280,7 @@ func TestDuplicateIDRejected(t *testing.T) {
 }
 
 func TestStopKillsChildProcesses(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	childPidFile := filepath.Join(t.TempDir(), "child.pid")
 	sh := fmt.Sprintf("sleep 1000 & echo $! > %s; wait", childPidFile)
 	a := &Agent{ID: "parent", Command: "sh", Args: []string{"-c", sh}}
@@ -341,7 +343,7 @@ func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
 		os.Unsetenv("GO_STICKY_HELPER_MARKER")
 	})
 
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sticky", Command: os.Args[0], Args: []string{"-test.run", "^TestStickyProcessHelper$"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -379,7 +381,7 @@ func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
 }
 
 func TestStopTwiceIsSafe(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -398,7 +400,7 @@ func TestStopTwiceIsSafe(t *testing.T) {
 }
 
 func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -426,7 +428,7 @@ func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
 }
 
 func TestSessionStableAcrossGenerations(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "evolve", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -468,7 +470,7 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 }
 
 func TestStaleSessionCannotMutateNewState(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "flip", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
@@ -506,7 +508,7 @@ func TestStaleSessionCannotMutateNewState(t *testing.T) {
 }
 
 func TestSnapshotIsACopy(t *testing.T) {
-	m := NewManager()
+	m := NewManager(driver.NewProcessDriver())
 	a := &Agent{ID: "copy", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() { _ = m.Stop(a) })
 
