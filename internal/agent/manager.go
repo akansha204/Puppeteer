@@ -21,6 +21,10 @@ func NewManager() *Manager {
 
 func (m *Manager) Start(a *Agent) error {
 	m.mu.Lock()
+	if existing, ok := m.agents[a.ID]; ok && existing != a {
+		m.mu.Unlock()
+		return fmt.Errorf("agent %q already exists", a.ID)
+	}
 	if a.Status == StatusRunning || a.Status == StatusStarting {
 		m.mu.Unlock()
 		return fmt.Errorf("agent %q is already %s", a.ID, a.Status)
