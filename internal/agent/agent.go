@@ -6,26 +6,48 @@ import (
 	"time"
 )
 
-type Status string
+type AgentID string
+
+type SessionID string
+
+type RuntimeState string
 
 const (
-	StatusIdle     Status = "idle"
-	StatusStarting Status = "starting"
-	StatusRunning  Status = "running"
-	StatusCrashed  Status = "crashed"
-	StatusStopped  Status = "stopped"
+	StateIdle     RuntimeState = "idle"
+	StateStarting RuntimeState = "starting"
+	StateRunning  RuntimeState = "running"
+	StateCrashed  RuntimeState = "crashed"
+	StateStopped  RuntimeState = "stopped"
 )
 
 type Agent struct {
-	ID      string
+	ID      AgentID
 	Command string
 	Args    []string
-	PID     int
-	Status  Status
 
-	StartedAt time.Time
-	process   *os.Process
-	cmd       *exec.Cmd
-	done      chan struct{} //closed by monitor when process dies
-	stopping  bool
+	session *session
+}
+
+type session struct {
+	ID         SessionID
+	Generation uint64
+	State      RuntimeState
+	StartedAt  time.Time
+	ExitedAt   time.Time
+
+	PID      int
+	process  *os.Process
+	cmd      *exec.Cmd
+	done     chan struct{} //closed by monitor when the process dies
+	stopping bool
+}
+
+type SessionSnapshot struct {
+	AgentID    AgentID
+	SessionID  SessionID
+	Generation uint64
+	State      RuntimeState
+	PID        int
+	StartedAt  time.Time
+	ExitedAt   time.Time
 }

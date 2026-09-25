@@ -37,15 +37,16 @@ func main() {
 				fmt.Println("usage: start <id> <command> [args...]")
 				continue
 			}
-			a := &agent.Agent{ID: fields[1], Command: fields[2], Args: fields[3:]}
+			a := &agent.Agent{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]}
 			if err := mgr.Start(a); err != nil {
 				fmt.Println("start:", err)
 				continue
 			}
-			fmt.Printf("started pid=%d status=%s\n", a.PID, mgr.StatusOf(a))
+			snap := mgr.Snapshot(a)
+			fmt.Printf("started pid=%d state=%s\n", snap.PID, snap.State)
 
 		case "stop":
-			a, ok := mgr.Get(fields[1])
+			a, ok := mgr.Get(agent.AgentID(fields[1]))
 			if !ok {
 				fmt.Printf("no agent %q\n", fields[1])
 				continue
@@ -57,7 +58,7 @@ func main() {
 			fmt.Printf("stopped %s\n", a.ID)
 
 		case "restart":
-			a, ok := mgr.Get(fields[1])
+			a, ok := mgr.Get(agent.AgentID(fields[1]))
 			if !ok {
 				fmt.Printf("no agent %q\n", fields[1])
 				continue
@@ -66,11 +67,12 @@ func main() {
 				fmt.Println("restart:", err)
 				continue
 			}
-			fmt.Printf("restarted pid=%d status=%s\n", a.PID, mgr.StatusOf(a))
+			snap := mgr.Snapshot(a)
+			fmt.Printf("restarted pid=%d state=%s\n", snap.PID, snap.State)
 
 		case "status":
-			for id, a := range mgr.GetAgents() {
-				fmt.Printf("%-10s pid=%-7d status=%s\n", id, a.PID, mgr.StatusOf(a))
+			for _, snap := range mgr.Snapshots() {
+				fmt.Printf("%-10s pid=%-7d state=%s\n", snap.AgentID, snap.PID, snap.State)
 			}
 
 		case "quit", "exit":
