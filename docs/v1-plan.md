@@ -4,35 +4,8 @@
 > Do not build the final architecture upfront. Each phase should solve
 > one real problem, add tests, and leave the previous behavior working.
 
-## Current State
-
-Pony v0 is a working **process supervisor**.
-
-Already built:
-
--   [x] Start a real OS process
--   [x] Track PID and runtime state
--   [x] Stop and restart
--   [x] Monitor natural process exit
--   [x] Detect crashes
--   [x] Manage multiple agents in one manager
--   [x] Avoid double `Wait()`
--   [x] Protect manager state with a mutex
--   [x] Race-tested lifecycle behavior
--   [x] Small REPL CLI
--   [x] CI with `gofmt`, `go mod tidy`, `go vet`, and `go test -race`
-
-Current architecture:
-
-``` text
-CLI
- ↓
-Manager
- ↓
-OS process
- ↘
-  monitor goroutine
-```
+> **v0** (the process supervisor) is released and documented in
+> [v0-plan.md](./v0-plan.md).
 
 The next goal is **not** to jump directly into tasks, worktrees, MCP,
 orchestration, or persistence.
