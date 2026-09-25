@@ -1,0 +1,825 @@
+# Pony — Development Plan
+
+> Build Pony one systems problem at a time.
+> Do not build the final architecture upfront. Each phase should solve
+> one real problem, add tests, and leave the previous behavior working.
+
+## Current State
+
+Pony v0 is a working **process supervisor**.
+
+Already built:
+
+-   [x] Start a real OS process
+-   [x] Track PID and runtime state
+-   [x] Stop and restart
+-   [x] Monitor natural process exit
+-   [x] Detect crashes
+-   [x] Manage multiple agents in one manager
+-   [x] Avoid double `Wait()`
+-   [x] Protect manager state with a mutex
+-   [x] Race-tested lifecycle behavior
+-   [x] Small REPL CLI
+-   [x] CI with `gofmt`, `go mod tidy`, `go vet`, and `go test -race`
+
+Current architecture:
+
+``` text
+CLI
+ ↓
+Manager
+ ↓
+OS process
+ ↘
+  monitor goroutine
+```
+
+The next goal is **not** to jump directly into tasks, worktrees, MCP,
+orchestration, or persistence.
+
+The next goal is to turn the process supervisor into a runtime that can
+reliably run **one real interactive coding agent**.
+
+------------------------------------------------------------------------
+
+# Phase 1 — Prove Multiple-Agent Lifecycle
+
+### Goal
+
+Prove that Pony can independently manage multiple running
+processes.
+
+### Build
+
+-   Start two agents.
+-   Stop one without affecting the other.
+-   Restart one while the other keeps running.
+-   Show both in `status`.
+-   Verify independent PIDs and states.
+
+### Tests
+
+-   [ ] Two agents can run simultaneously.
+-   [ ] Stopping agent A does not affect agent B.
+-   [ ] Restarting A does not affect B.
+-   [ ] Natural exit of A does not change B.
+-   [ ] Duplicate IDs are rejected.
+
+### Done when
+
+``` text
+agent-1 → running
+agent-2 → running
+
+stop agent-1
+
+agent-1 → stopped
+agent-2 → running
+```
+
+Do not add new architecture yet.
+
+------------------------------------------------------------------------
+
+# Phase 2 — Make Shutdown Correct
+
+### Goal
+
+A process must never make Pony hang forever during shutdown.
+
+### Learn
+
+-   Process groups
+-   SIGTERM vs SIGKILL
+-   Parent/child processes
+-   Why killing only the parent can leak children
+-   Grace periods
+
+### Build
+
+Implement:
+
+``` text
+Stop
+ ↓
+SIGTERM process group
+ ↓
+wait up to N seconds
+ ↓
+still alive?
+ ├── no  → clean exit
+ └── yes → SIGKILL process group
+```
+
+Start with a small grace period such as 3--5 seconds.
+
+### Tests
+
+-   [ ] Normal process stops with SIGTERM.
+-   [ ] Process ignoring SIGTERM is eventually killed.
+-   [ ] Child process does not remain running.
+-   [ ] Stop called twice is safe.
+-   [ ] Restart always produces a new generation.
+
+### Done when
+
+A badly behaved process cannot permanently block Pony.
+
+------------------------------------------------------------------------
+
+# Phase 3 — Separate Agent Identity From Runtime
+
+### Goal
+
+Stop treating a PID as the identity of an agent.
+
+Introduce only the concepts that are now justified:
+
+``` text
+AgentID
+SessionID
+Generation
+RuntimeState
+SessionSnapshot
+```
+
+Mental model:
+
+``` text
+Agent
+  └── Session
+        └── Generation
+              └── OS Process
+                    └── PID
+```
+
+A restart creates a new generation.
+
+``` text
+agent-1
+  generation 1 → PID 1001
+  generation 2 → PID 1042
+```
+
+### Invariants
+
+-   [ ] PID is metadata, not identity.
+-   [ ] Every restart creates a newer generation.
+-   [ ] An old process exit cannot modify the state of a newer
+    generation.
+-   [ ] Callers receive snapshots instead of mutable internal state.
+
+### Done when
+
+The lifecycle model still works without relying on PID identity.
+
+------------------------------------------------------------------------
+
+# Phase 4 — Introduce the Driver Boundary
+
+### Goal
+
+Stop making the rest of Pony depend directly on `os/exec`.
+
+Introduce the smallest useful abstraction:
+
+``` go
+type Driver interface {
+    Start(ctx context.Context, spec AgentSpec) (*Handle, error)
+    Write(ctx context.Context, data []byte) error
+    Resize(rows, cols uint16) error
+    Stop(ctx context.Context) error
+    Wait() ExitResult
+}
+```
+
+Do **not** build multiple drivers.
+
+First implementation:
+
+``` text
+ProcessDriver
+```
+
+It can simply wrap the process behavior Pony already has.
+
+### Done when
+
+-   [ ] Supervisor owns lifecycle.
+-   [ ] Driver owns process interaction.
+-   [ ] Higher-level code does not call `exec.Command` directly.
+-   [ ] Existing lifecycle tests still pass.
+
+------------------------------------------------------------------------
+
+# Phase 5 — Build the PTY Driver
+
+### Goal
+
+Run a real interactive terminal program.
+
+This is the first major jump from "process supervisor" to "agent
+runtime".
+
+### Learn
+
+-   PTY vs pipe
+-   TTY behavior
+-   stdin/stdout/stderr
+-   terminal dimensions
+-   ANSI escape sequences
+-   process groups and terminal sessions
+
+### Build
+
+Start with something simple:
+
+``` text
+Pony
+   ↓
+PTY Driver
+   ↓
+bash / sh
+```
+
+Required operations:
+
+``` text
+Start
+Write
+Read
+Resize
+Wait
+Stop
+```
+
+### Test manually
+
+``` text
+start shell
+↓
+send: echo hello
+↓
+read: hello
+↓
+resize terminal
+↓
+send: exit
+↓
+observe clean exit
+```
+
+### Then
+
+Run one real coding agent through the PTY.
+
+Do not add orchestration yet.
+
+### Done when
+
+Pony can reliably start, interact with, and stop one interactive
+agent.
+
+------------------------------------------------------------------------
+
+# Phase 6 — Terminal Attach / Detach
+
+### Goal
+
+Make the runtime actually usable from the terminal.
+
+### Build
+
+Add:
+
+``` bash
+pony attach <session>
+```
+
+The user's terminal should connect to the session's PTY.
+
+Support:
+
+-   [ ] input forwarding
+-   [ ] output forwarding
+-   [ ] terminal resize
+-   [ ] Ctrl+C behavior
+-   [ ] Ctrl+D behavior
+-   [ ] clean detach without killing the agent
+
+### Done when
+
+You can:
+
+``` text
+start agent
+↓
+detach
+↓
+agent keeps running
+↓
+attach again
+↓
+continue interacting
+```
+
+If detach/reattach becomes too large for the current scope, explicitly
+defer detach and finish reliable interactive execution first.
+
+------------------------------------------------------------------------
+
+# Phase 7 — Workspace Isolation
+
+### Goal
+
+Two coding agents must never accidentally edit the same checkout.
+
+Introduce a small workspace manager.
+
+``` text
+Task
+ ↓
+Workspace
+ ↓
+Git worktree
+ ↓
+Agent
+```
+
+Use Git itself:
+
+``` bash
+git worktree add
+git worktree list --porcelain
+git worktree remove
+git worktree prune
+```
+
+### Build
+
+``` text
+Allocate(task)
+Release(task)
+List()
+```
+
+Each workspace should have:
+
+``` text
+WorkspaceID
+Path
+Branch
+TaskID
+```
+
+The agent's working directory becomes the allocated worktree.
+
+### Tests
+
+-   [ ] Two tasks get different worktrees.
+-   [ ] Both can run simultaneously.
+-   [ ] Releasing one does not remove the other.
+-   [ ] Cleanup is idempotent.
+
+### Done when
+
+Two agents can work against the same repository without sharing a
+writable checkout.
+
+------------------------------------------------------------------------
+
+# Phase 8 — Introduce Tasks
+
+### Goal
+
+Separate the **software task** from the **agent process**.
+
+Minimal model:
+
+``` text
+Task
+ ├── Goal
+ ├── Repository
+ ├── BaseRef
+ ├── Workspace
+ └── Session
+```
+
+Example:
+
+``` yaml
+id: raft-snapshot
+
+goal: Implement Raft snapshot installation.
+
+repository: ~/code/ragnordb
+base_ref: master
+```
+
+Do not add a database.
+
+Keep task state in memory first.
+
+### Task states
+
+``` text
+pending
+running
+validating
+verified
+failed
+stopped
+```
+
+### Done when
+
+A task can create a workspace and launch an agent inside it.
+
+------------------------------------------------------------------------
+
+# Phase 9 — Structured Lifecycle Events
+
+### Goal
+
+Make runtime behavior observable without relying only on current mutable
+state.
+
+Start with a small event model:
+
+``` text
+TaskCreated
+WorkspaceCreated
+SessionStarted
+RuntimeStarted
+RuntimeExited
+RuntimeCrashed
+ValidationStarted
+ValidationPassed
+ValidationFailed
+TaskCompleted
+TaskFailed
+```
+
+Example:
+
+``` go
+type Event struct {
+    Time       time.Time
+    TaskID     TaskID
+    SessionID  SessionID
+    Generation uint64
+    Type       EventType
+    Message    string
+}
+```
+
+Initially:
+
+``` text
+in-memory events
++
+optional JSONL log
+```
+
+No SQLite yet.
+
+### Invariants
+
+-   [ ] Events have ordering.
+-   [ ] A runtime generation has one final exit event.
+-   [ ] Old generations cannot emit events against new generations.
+-   [ ] Event recording does not mutate lifecycle state directly.
+
+### Done when
+
+You can reconstruct what happened to a task from its event stream.
+
+------------------------------------------------------------------------
+
+# Phase 10 — Validation
+
+### Goal
+
+Separate:
+
+``` text
+agent finished
+```
+
+from:
+
+``` text
+task succeeded
+```
+
+Introduce:
+
+``` go
+type ValidationStep struct {
+    Command string
+    Args    []string
+    Timeout time.Duration
+}
+```
+
+Run validation inside the task's worktree.
+
+Capture:
+
+-   [ ] exit code
+-   [ ] stdout
+-   [ ] stderr
+-   [ ] duration
+-   [ ] timeout
+
+Example:
+
+``` bash
+pony run \
+  --id example \
+  --repo ./repo \
+  --command codex \
+  --validate "go test ./..."
+```
+
+### Rule
+
+``` text
+Task verified
+=
+every required validation step succeeded
+```
+
+### Done when
+
+Pony can tell the difference between an agent claiming completion
+and a validated result.
+
+------------------------------------------------------------------------
+
+# Phase 11 — End-to-End `run`
+
+### Goal
+
+Make the whole system usable through one command.
+
+Target:
+
+``` bash
+pony run \
+  --id example \
+  --repo ~/code/project \
+  --command codex \
+  --validate "go test ./..."
+```
+
+Expected lifecycle:
+
+``` text
+create task
+   ↓
+allocate worktree
+   ↓
+start session
+   ↓
+start agent in PTY
+   ↓
+interact / observe
+   ↓
+agent exits
+   ↓
+run validation
+   ↓
+verified / failed
+```
+
+CLI surface:
+
+``` bash
+pony run
+pony list
+pony attach
+pony stop
+pony restart
+pony validate
+pony clean
+```
+
+Keep the CLI simple.
+
+No TUI yet.
+
+### Done when
+
+A new user can clone Pony and run one coding task from start to
+validated result.
+
+------------------------------------------------------------------------
+
+# Phase 12 — Hardening
+
+Only after the end-to-end flow works.
+
+Focus on correctness rather than features.
+
+### Process
+
+-   [ ] process-tree cleanup
+-   [ ] race conditions
+-   [ ] shutdown edge cases
+-   [ ] generation races
+-   [ ] PTY cleanup
+-   [ ] terminal resize edge cases
+-   [ ] child-process leaks
+
+### Git
+
+-   [ ] worktree cleanup failures
+-   [ ] dirty worktrees
+-   [ ] missing branches
+-   [ ] repository errors
+
+### CLI
+
+-   [ ] invalid arguments
+-   [ ] useful errors
+-   [ ] interrupted commands
+-   [ ] cleanup on exit
+
+### Testing
+
+-   [ ] unit tests
+-   [ ] integration tests
+-   [ ] `go test -race ./...`
+-   [ ] end-to-end smoke test
+-   [ ] CI green
+
+------------------------------------------------------------------------
+
+# V1 Definition of Done
+
+Pony V1 is complete when this works reliably:
+
+``` text
+             ┌──────────────┐
+             │     Task     │
+             └──────┬───────┘
+                    ↓
+             ┌──────────────┐
+             │ Git Worktree │
+             └──────┬───────┘
+                    ↓
+             ┌──────────────┐
+             │    Session   │
+             └──────┬───────┘
+                    ↓
+             ┌──────────────┐
+             │  PTY Driver  │
+             └──────┬───────┘
+                    ↓
+             ┌──────────────┐
+             │ Coding Agent │
+             └──────┬───────┘
+                    ↓
+             ┌──────────────┐
+             │  Validation  │
+             └──────┬───────┘
+                    ↓
+              VERIFIED / FAILED
+```
+
+Checklist:
+
+-   [ ] multiple agents run independently
+-   [ ] process shutdown is bounded
+-   [ ] child processes are cleaned up
+-   [ ] session identity is independent of PID
+-   [ ] generations protect against stale process events
+-   [ ] one driver abstraction exists
+-   [ ] one PTY driver works
+-   [ ] terminal input/output works
+-   [ ] terminal resize works
+-   [ ] agents can run in isolated Git worktrees
+-   [ ] tasks are separate from sessions
+-   [ ] lifecycle events are observable
+-   [ ] validation is deterministic
+-   [ ] execution status and verification status are separate
+-   [ ] end-to-end `pony run` works
+-   [ ] `go test -race ./...` passes
+-   [ ] CI is green
+
+------------------------------------------------------------------------
+
+# After V1 — Only When a Real Problem Appears
+
+Potential V2+ work:
+
+``` text
+ACP driver
+daemon/client split
+persistent sessions
+SQLite
+crash recovery
+semantic agent states
+permission policies
+Docker / sandboxing
+cgroups
+remote workers
+SSH
+scheduling
+concurrency limits
+reviewer agents
+best-of-N
+task DAGs
+MCP/API
+TUI
+web UI
+plugins
+```
+
+These are **not milestones for V1**.
+
+They are a backlog.
+
+------------------------------------------------------------------------
+
+# Repository Evolution
+
+Do not create all of these directories now.
+
+Let the repository grow with the problems:
+
+``` text
+Today
+
+internal/
+└── agent/
+
+
+After process abstraction
+
+internal/
+├── agent/
+├── driver/
+└── supervisor/
+
+
+After PTY
+
+internal/
+├── agent/
+├── driver/
+│   └── pty/
+└── supervisor/
+
+
+After workspaces/tasks
+
+internal/
+├── agent/
+├── driver/
+│   └── pty/
+├── supervisor/
+├── workspace/
+└── task/
+
+
+After events/validation
+
+internal/
+├── agent/
+├── driver/
+│   └── pty/
+├── supervisor/
+├── workspace/
+├── task/
+├── event/
+└── validation/
+```
+
+Do not create empty packages just because the final architecture
+contains them.
+
+------------------------------------------------------------------------
+
+# The Rule For Every Step
+
+Before implementing something, answer:
+
+1.  **What problem am I solving?**
+2.  **What OS/system concept do I need to understand?**
+3.  **What is the smallest abstraction needed?**
+4.  **What invariant must remain true?**
+5.  **How will I test it?**
+6.  **What does "done" look like?**
+
+Then implement only that step.
+
+> Learn → implement → test → observe → refactor → move on.
+
+Do not let the final architecture dictate today's code.
+
+The goal is not to make Pony look like Herdr.
+
+The goal is to make Pony a runtime whose architecture emerges from
+real problems encountered while running coding agents.
