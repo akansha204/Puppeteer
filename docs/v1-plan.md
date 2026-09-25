@@ -136,11 +136,11 @@ agent-1
 
 ### Invariants
 
--   [ ] PID is metadata, not identity.
--   [ ] Every restart creates a newer generation.
--   [ ] An old process exit cannot modify the state of a newer
+-   [x] PID is metadata, not identity.
+-   [x] Every restart creates a newer generation.
+-   [x] An old process exit cannot modify the state of a newer
     generation.
--   [ ] Callers receive snapshots instead of mutable internal state.
+-   [x] Callers receive snapshots instead of mutable internal state.
 
 ### Done when
 
@@ -666,8 +666,8 @@ Checklist:
 -   [x] multiple agents run independently
 -   [x] process shutdown is bounded
 -   [x] child processes are cleaned up
--   [ ] session identity is independent of PID
--   [ ] generations protect against stale process events
+-   [x] session identity is independent of PID
+-   [x] generations protect against stale process events
 -   [ ] one driver abstraction exists
 -   [ ] one PTY driver works
 -   [ ] terminal input/output works
