@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/akansha204/puppeteer/internal/agent"
+	"github.com/akansha204/pony/internal/agent"
 )
 
 func main() {
@@ -22,7 +22,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("puppeteer> ")
+		fmt.Print("pony> ")
 		if !scanner.Scan() {
 			break
 		}

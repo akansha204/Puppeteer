@@ -1,12 +1,12 @@
-BIN := bin/puppeteer
+BIN := bin/pony
 
 .PHONY: build run test fmt fmt-check tidy-check vet check clean
 
 build:
-	go build -o $(BIN) ./cmd/puppeteer
+	go build -o $(BIN) ./cmd/pony
 
 run:
-	go run ./cmd/puppeteer
+	go run ./cmd/pony
 
 test:
 	go test -race ./...

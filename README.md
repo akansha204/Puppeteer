@@ -1,11 +1,11 @@
-# Puppeteer
+# Pony
 
-Puppeteer is a lightweight Go runtime for running and managing
+Pony is a lightweight Go runtime for running and managing
 multiple AI coding agents.
 
 ## v0 goal
 
-Puppeteer should be able to:
+Pony should be able to:
 
 1. Start an agent
 2. Keep its process/session alive
@@ -18,7 +18,7 @@ Puppeteer should be able to:
 Requires Go 1.26+.
 
 ```sh
-make build      # compile to bin/puppeteer
+make build      # compile to bin/pony
 make run        # run the CLI
 make test       # run tests with the race detector
 make check      # fmt + tidy + vet + test (mirrors CI)
