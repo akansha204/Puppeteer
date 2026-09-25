@@ -32,11 +32,11 @@ processes.
 
 ### Tests
 
--   [ ] Two agents can run simultaneously.
--   [ ] Stopping agent A does not affect agent B.
--   [ ] Restarting A does not affect B.
--   [ ] Natural exit of A does not change B.
--   [ ] Duplicate IDs are rejected.
+-   [x] Two agents can run simultaneously.
+-   [x] Stopping agent A does not affect agent B.
+-   [x] Restarting A does not affect B.
+-   [x] Natural exit of A does not change B.
+-   [x] Duplicate IDs are rejected.
 
 ### Done when
 
@@ -88,11 +88,11 @@ Start with a small grace period such as 3--5 seconds.
 
 ### Tests
 
--   [ ] Normal process stops with SIGTERM.
--   [ ] Process ignoring SIGTERM is eventually killed.
--   [ ] Child process does not remain running.
--   [ ] Stop called twice is safe.
--   [ ] Restart always produces a new generation.
+-   [x] Normal process stops with SIGTERM.
+-   [x] Process ignoring SIGTERM is eventually killed.
+-   [x] Child process does not remain running.
+-   [x] Stop called twice is safe.
+-   [x] Restart always produces a new generation.
 
 ### Done when
 
@@ -663,9 +663,9 @@ Pony V1 is complete when this works reliably:
 
 Checklist:
 
--   [ ] multiple agents run independently
--   [ ] process shutdown is bounded
--   [ ] child processes are cleaned up
+-   [x] multiple agents run independently
+-   [x] process shutdown is bounded
+-   [x] child processes are cleaned up
 -   [ ] session identity is independent of PID
 -   [ ] generations protect against stale process events
 -   [ ] one driver abstraction exists
