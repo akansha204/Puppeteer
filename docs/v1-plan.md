@@ -178,10 +178,10 @@ It can simply wrap the process behavior Pony already has.
 
 ### Done when
 
--   [ ] Supervisor owns lifecycle.
--   [ ] Driver owns process interaction.
--   [ ] Higher-level code does not call `exec.Command` directly.
--   [ ] Existing lifecycle tests still pass.
+-   [x] Supervisor owns lifecycle.
+-   [x] Driver owns process interaction.
+-   [x] Higher-level code does not call `exec.Command` directly.
+-   [x] Existing lifecycle tests still pass.
 
 ------------------------------------------------------------------------
 
