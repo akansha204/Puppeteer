@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -14,6 +13,8 @@ type Manager struct {
 	mu     sync.Mutex
 	agents map[string]*Agent
 }
+
+const stopGrace = 3 * time.Second
 
 func NewManager() *Manager {
 	return &Manager{agents: make(map[string]*Agent)}
@@ -31,6 +32,7 @@ func (m *Manager) Start(a *Agent) error {
 	}
 
 	cmd := exec.Command(a.Command, a.Args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start agent %q: %w", a.ID, err)
@@ -59,15 +61,21 @@ func (m *Manager) Stop(a *Agent) error {
 	}
 
 	a.stopping = true
-	process := a.process
+	pid := a.PID
 	done := a.done
 	m.mu.Unlock()
 
-	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	pgid := -pid
+	if err := syscall.Kill(pgid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("stop agent %q: %w", a.ID, err)
 	}
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(stopGrace):
+		_ = syscall.Kill(pgid, syscall.SIGKILL)
+		<-done
+	}
 
 	m.mu.Lock()
 	a.PID = 0
