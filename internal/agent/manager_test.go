@@ -1,18 +1,29 @@
 package agent
 
 import (
+	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	s := string(raw)
+	close := strings.LastIndex(s, ")")
+	fields := strings.Fields(s[close+1:])
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] != "Z"
 }
 
 func waitForStatus(t *testing.T, m *Manager, a *Agent, want Status) {
@@ -259,5 +270,152 @@ func TestDuplicateIDRejected(t *testing.T) {
 	}
 	if got := m.StatusOf(a); got != StatusRunning {
 		t.Fatalf("alpha = %s, want %s", got, StatusRunning)
+	}
+}
+
+func TestStopKillsChildProcesses(t *testing.T) {
+	m := NewManager()
+	childPidFile := filepath.Join(t.TempDir(), "child.pid")
+	sh := fmt.Sprintf("sleep 1000 & echo $! > %s; wait", childPidFile)
+	a := &Agent{ID: "parent", Command: "sh", Args: []string{"-c", sh}}
+	t.Cleanup(func() { _ = m.Stop(a) })
+
+	if err := m.Start(a); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	raw := ""
+	for {
+		b, err := os.ReadFile(childPidFile)
+		if err == nil {
+			raw = strings.TrimSpace(string(b))
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child pid file never appeared: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	childPID, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("bad child pid %q: %v", raw, err)
+	}
+	if !processAlive(childPID) {
+		t.Fatalf("child %d not running before stop", childPID)
+	}
+
+	if err := m.Stop(a); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if processAlive(childPID) {
+		t.Fatalf("child process %d survived Stop", childPID)
+	}
+	if m.StatusOf(a) != StatusStopped {
+		t.Fatalf("status = %s, want %s", m.StatusOf(a), StatusStopped)
+	}
+}
+
+func TestStickyProcessHelper(t *testing.T) {
+	if os.Getenv("GO_STICKY_HELPER_PROC") != "1" {
+		return
+	}
+	signal.Ignore(syscall.SIGTERM)
+	if err := os.WriteFile(os.Getenv("GO_STICKY_HELPER_MARKER"), []byte("ready"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {}
+}
+
+func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ready")
+	os.Setenv("GO_STICKY_HELPER_PROC", "1")
+	os.Setenv("GO_STICKY_HELPER_MARKER", marker)
+	t.Cleanup(func() {
+		os.Unsetenv("GO_STICKY_HELPER_PROC")
+		os.Unsetenv("GO_STICKY_HELPER_MARKER")
+	})
+
+	m := NewManager()
+	a := &Agent{ID: "sticky", Command: os.Args[0], Args: []string{"-test.run", "^TestStickyProcessHelper$"}}
+	t.Cleanup(func() { _ = m.Stop(a) })
+
+	if err := m.Start(a); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	pid := a.PID
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sticky helper never reported ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	started := time.Now()
+	if err := m.Stop(a); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	if elapsed < 2*time.Second {
+		t.Fatalf("process died on SIGTERM, but grace period should have forced SIGKILL (elapsed %v)", elapsed)
+	}
+	if processAlive(pid) {
+		t.Fatalf("process group leader %d survived Stop", pid)
+	}
+	if m.StatusOf(a) != StatusStopped {
+		t.Fatalf("status = %s, want %s", m.StatusOf(a), StatusStopped)
+	}
+}
+
+func TestStopTwiceIsSafe(t *testing.T) {
+	m := NewManager()
+	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(a) })
+
+	if err := m.Start(a); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.Stop(a); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	if err := m.Stop(a); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	if m.StatusOf(a) != StatusStopped {
+		t.Fatalf("status = %s, want %s", m.StatusOf(a), StatusStopped)
+	}
+}
+
+func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
+	m := NewManager()
+	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(a) })
+
+	if err := m.Start(a); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	seen := map[int]bool{a.PID: true}
+
+	for i := 0; i < 3; i++ {
+		if err := m.Restart(a); err != nil {
+			t.Fatalf("Restart %d: %v", i, err)
+		}
+		if seen[a.PID] {
+			t.Fatalf("pid %d reused across generations", a.PID)
+		}
+		seen[a.PID] = true
+		if !processAlive(a.PID) {
+			t.Fatalf("generation %d not alive: pid=%d", i+1, a.PID)
+		}
+		if m.StatusOf(a) != StatusRunning {
+			t.Fatalf("status = %s, want %s", m.StatusOf(a), StatusRunning)
+		}
 	}
 }
