@@ -116,6 +116,35 @@ func TestStartAppliesCwdAndEnv(t *testing.T) {
 	}
 }
 
+func TestProcessDriverReadOutput(t *testing.T) {
+	d := NewProcessDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", "echo hi"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var got strings.Builder
+	buf := make([]byte, 64)
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(got.String(), "hi") && time.Now().Before(deadline) {
+		n, err := d.Read(h, buf)
+		if err != nil {
+			break
+		}
+		if n > 0 {
+			got.Write(buf[:n])
+		}
+	}
+	if !strings.Contains(got.String(), "hi") {
+		t.Fatalf("output %q does not contain hi", got.String())
+	}
+
+	res := d.Wait(h)
+	if res.Err != nil {
+		t.Fatalf("expected clean exit, got: %v", res.Err)
+	}
+}
+
 func TestStopIsBoundedWithoutWait(t *testing.T) {
 	d := &ProcessDriver{Grace: 100 * time.Millisecond}
 	h, err := d.Start(context.Background(), Spec{Path: "sleep", Args: []string{"1000"}})

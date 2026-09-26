@@ -36,15 +36,17 @@ type ExitResult struct {
 type Handle struct {
 	PID int
 
-	done  chan struct{} //closed by Wait when the process dies
-	proc  *os.Process
-	cmd   *exec.Cmd
-	stdin io.WriteCloser // optional; Write feeds the process here
+	done   chan struct{} //closed by Wait when the process dies
+	proc   *os.Process
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser // optional; Write feeds the process here
+	stdout io.ReadCloser  // optional; Read drains the process here
 }
 
 type Driver interface {
 	Start(ctx context.Context, spec Spec) (*Handle, error)
 	Write(h *Handle, data []byte) (int, error)
+	Read(h *Handle, p []byte) (int, error)
 	Resize(h *Handle, rows, cols uint16) error
 	Stop(ctx context.Context, h *Handle) error
 	Wait(h *Handle) ExitResult
@@ -75,16 +77,22 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 
 	return &Handle{
-		PID:   cmd.Process.Pid,
-		done:  make(chan struct{}),
-		proc:  cmd.Process,
-		cmd:   cmd,
-		stdin: stdin,
+		PID:    cmd.Process.Pid,
+		done:   make(chan struct{}),
+		proc:   cmd.Process,
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
 	}, nil
 }
 
@@ -93,6 +101,13 @@ func (d *ProcessDriver) Write(h *Handle, data []byte) (int, error) {
 		return 0, fmt.Errorf("process %d has no stdin", h.PID)
 	}
 	return h.stdin.Write(data)
+}
+
+func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
+	if h.stdout == nil {
+		return 0, fmt.Errorf("process %d has no stdout", h.PID)
+	}
+	return h.stdout.Read(p)
 }
 
 // Resize is a no-op for a plain process: a window size is only meaningful
@@ -106,6 +121,7 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	h.proc = nil
 	h.cmd = nil
 	h.stdin = nil
+	h.stdout = nil
 	close(h.done)
 
 	res := ExitResult{Err: err}
