@@ -6,6 +6,9 @@ Pony v0 is a working **process supervisor**: a small Go runtime that
 can start, observe, stop, and restart OS processes that stand in for
 coding agents.
 
+> **Platform:** V1 targets Linux only (process groups, signals, and
+> `/proc` inspection are Linux/Unix-specific).
+
 ## v0 goal
 
 Pony should be able to:

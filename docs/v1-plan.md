@@ -13,6 +13,18 @@ orchestration, or persistence.
 The next goal is to turn the process supervisor into a runtime that can
 reliably run **one real interactive coding agent**.
 
+## Platform support (V1 decision)
+
+Pony V1 supports **Linux only**. The runtime relies on Linux/Unix
+primitives: process groups (`Setpgid`), `SIGTERM`/`SIGKILL`, and
+`/proc/<pid>` inspection, so portability is declared rather than
+accidental.
+
+Later, platform-specific code will be split into tagged files such as
+`process_unix.go` / `process_windows.go` (`//go:build unix`), and the
+`/proc`-based test assertions will be isolated into Linux-only test
+files appended with `_linux_test.go`.
+
 ------------------------------------------------------------------------
 
 # Phase 1 — Prove Multiple-Agent Lifecycle

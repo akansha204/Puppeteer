@@ -13,6 +13,14 @@ Pony should be able to:
 4. Stop/restart it
 5. Manage multiple agents independently
 
+## Platform
+
+V1 targets **Linux only**. Process-group termination (`Setpgid`,
+`SIGTERM`/`SIGKILL`), exit-signal decoding, and the `/proc/<pid>`
+checks used by tests are Linux/Unix-specific behaviors. Cross-platform
+support is a later milestone (platform-tagged files such as
+`process_unix.go` / `process_windows.go`).
+
 ## Development
 
 Requires Go 1.26+.
