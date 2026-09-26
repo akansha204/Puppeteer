@@ -25,6 +25,7 @@ func main() {
 	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for {
 		fmt.Print("pony> ")
 		if !scanner.Scan() {
@@ -139,6 +140,9 @@ func main() {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, "input:", err)
+	}
 }
 
 // readAgent drains an agent's terminal: it blocks up to 200ms per chunk,
