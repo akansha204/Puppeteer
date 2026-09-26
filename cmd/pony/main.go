@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/driver"
+	"github.com/akansha204/pony/internal/shell_lexer"
 )
 
 func main() {
@@ -27,7 +27,11 @@ func main() {
 		if !scanner.Scan() {
 			break
 		}
-		fields := strings.Fields(scanner.Text())
+		fields, err := shell_lexer.Fields(scanner.Text())
+		if err != nil {
+			fmt.Println("malformed input:", err)
+			continue
+		}
 		if len(fields) == 0 {
 			continue
 		}
