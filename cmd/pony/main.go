@@ -47,6 +47,10 @@ func main() {
 			fmt.Printf("started pid=%d state=%s\n", snap.PID, snap.State)
 
 		case "stop":
+			if len(fields) != 2 {
+				fmt.Println("usage: stop <id>")
+				continue
+			}
 			id := agent.AgentID(fields[1])
 			if err := mgr.Stop(id); err != nil {
 				fmt.Println("stop:", err)
@@ -55,6 +59,10 @@ func main() {
 			fmt.Printf("stopped %s\n", id)
 
 		case "restart":
+			if len(fields) != 2 {
+				fmt.Println("usage: restart <id>")
+				continue
+			}
 			id := agent.AgentID(fields[1])
 			if err := mgr.Restart(id); err != nil {
 				fmt.Println("restart:", err)
