@@ -56,6 +56,41 @@ func TestWaitReportsNonZeroExit(t *testing.T) {
 	}
 }
 
+// A clean exit must report ExitCode 0 and Signal -1 per the ExitResult
+// contract; historically Signal was left at the zero value 0.
+func TestWaitCleanExitIsConsistent(t *testing.T) {
+	d := NewProcessDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	res := d.Wait(h)
+	if res.Err != nil {
+		t.Fatalf("Err = %v, want nil for exit 0", res.Err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	if res.Signal != -1 {
+		t.Fatalf("Signal = %v, want -1 on a clean exit", res.Signal)
+	}
+}
+
+func TestWaitAfterWaitReportsClosed(t *testing.T) {
+	d := NewProcessDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res := d.Wait(h); res.Err != nil {
+		t.Fatalf("first Wait: %v", res.Err)
+	}
+	res := d.Wait(h)
+	if !errors.Is(res.Err, ErrClosed) {
+		t.Fatalf("second Wait Err = %v, want ErrClosed", res.Err)
+	}
+}
+
 func TestWriteFeedsStdin(t *testing.T) {
 	d := NewProcessDriver()
 	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", `read -r line; [ "$line" = "ping" ]`}})

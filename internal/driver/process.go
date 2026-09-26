@@ -226,29 +226,80 @@ func (d *ProcessDriver) Resize(_ *Handle, _, _ uint16) error {
 	return nil
 }
 
+func classifyExit(err error) ExitResult {
+	res := ExitResult{
+		Err:      err,
+		ExitCode: 0,
+		Signal:   -1,
+	}
+
+	if err == nil {
+		return res
+	}
+
+	res.ExitCode = -1
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return res
+	}
+
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok {
+		return res
+	}
+
+	if ws.Exited() {
+		res.ExitCode = ws.ExitStatus()
+	}
+
+	if ws.Signaled() {
+		res.Signal = ws.Signal()
+	}
+
+	return res
+}
+
 func (d *ProcessDriver) Wait(h *Handle) ExitResult {
-	// cmd.Wait runs outside the locks; only teardown locks, once dead.
-	err := h.cmd.Wait()
+	h.stateMu.RLock()
+	cmd := h.cmd
+	h.stateMu.RUnlock()
+
+	if cmd == nil {
+		return ExitResult{
+			Err:      ErrClosed,
+			ExitCode: -1,
+			Signal:   -1,
+		}
+	}
+
+	err := cmd.Wait()
+	res := classifyExit(err)
+
 	h.stateMu.Lock()
+	stdin := h.stdin
+	stdout := h.stdout
+	master := h.master
+
 	h.proc = nil
 	h.cmd = nil
 	h.stdin = nil
 	h.stdout = nil
-	if h.master != nil {
-		h.master.Close()
-		h.master = nil
-	}
+	h.master = nil
 	h.stateMu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if stdout != nil {
+		_ = stdout.Close()
+	}
+	if master != nil {
+		_ = master.Close()
+	}
+
 	close(h.done)
 
-	res := ExitResult{Err: err}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			res.ExitCode = ws.ExitStatus()
-			res.Signal = ws.Signal()
-		}
-	}
 	return res
 }
 
