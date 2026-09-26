@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akansha204/pony/internal/agent"
@@ -147,10 +150,9 @@ func main() {
 
 // readAgent drains an agent's terminal: it blocks up to 200ms per chunk,
 // prints every byte as it arrives, and stops once the agent has been quiet
-// for a full chunk or a hard 2s cap is hit. An idle agent yields nothing. A
-// read error is only reported when nothing was captured: dying mid-stream
-// (the pty master returns EIO as the process exits) is normal and the bytes
-// we did get are still printed.
+// for a full chunk or a hard 2s cap is hit. An idle agent yields nothing. EOF
+// and EIO (the pty master signaling the process died) are normal at the end
+// of a stream; anything else is surfaced even when bytes were captured.
 func readAgent(mgr *agent.Manager, id agent.AgentID) {
 	const chunkWait = 200 * time.Millisecond
 
@@ -158,22 +160,33 @@ func readAgent(mgr *agent.Manager, id agent.AgentID) {
 	var out strings.Builder
 	deadline := time.Now().Add(2 * time.Second)
 	var readErr error
+
 	for time.Now().Before(deadline) {
 		n, err := mgr.ReadTimeout(id, buf, chunkWait)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+
 		if err != nil {
 			readErr = err
 			break
 		}
+
 		if n == 0 {
-			break // quiet: everything pending has come through
+			break
 		}
-		out.Write(buf[:n])
 	}
 
-	fmt.Print(out.String())
 	if out.Len() > 0 {
-		fmt.Println()
-	} else if readErr != nil {
+		fmt.Print(out.String())
+		if !strings.HasSuffix(out.String(), "\n") {
+			fmt.Println()
+		}
+	}
+
+	if readErr != nil &&
+		!errors.Is(readErr, io.EOF) &&
+		!errors.Is(readErr, syscall.EIO) {
 		fmt.Println("read:", readErr)
 	}
 }
