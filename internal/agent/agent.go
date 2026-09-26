@@ -16,6 +16,7 @@ const (
 	StateIdle     RuntimeState = "idle"
 	StateStarting RuntimeState = "starting"
 	StateRunning  RuntimeState = "running"
+	StateStopping RuntimeState = "stopping"
 	StateCrashed  RuntimeState = "crashed"
 	StateStopped  RuntimeState = "stopped"
 )
@@ -33,10 +34,10 @@ type session struct {
 	StartedAt  time.Time
 	ExitedAt   time.Time
 
-	PID      int
-	h        *driver.Handle
-	done     chan struct{} //closed by monitor when the process dies
-	stopping bool
+	PID     int
+	h       *driver.Handle
+	done    chan struct{} //closed by monitor when the process dies
+	stopReq bool          //user asked for this session to stop
 }
 
 type agent struct {
