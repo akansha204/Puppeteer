@@ -28,8 +28,8 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 		return nil, err
 	}
 
-	// creack/pty.Open() hands back the master (we read and write here) and
-	// the slave (the actual tty the child runs on).
+	// creack/pty.Open returns the master (we read/write here) and the slave
+	// (the tty the child runs on).
 	master, slave, err := pty.Open()
 	if err != nil {
 		return nil, err
@@ -46,9 +46,7 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
-	// Setsid detaches the child from our terminal and makes it a session
-	// leader; Setctty makes the slave its controlling terminal. Ctty names
-	// the child's fd for that terminal: 0, because the slave is its stdin.
+	// Setsid: new session/group; Setctty: slave is its controlling terminal.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
@@ -72,28 +70,39 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 }
 
 func (d *PTYDriver) Write(h *Handle, data []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	// Held across the write so Wait cannot close the master mid-write.
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+
 	if h.master == nil {
-		return 0, fmt.Errorf("process %d is not on a terminal", h.PID)
+		return 0, fmt.Errorf("%w: process %d is not on a terminal", ErrClosed, h.PID)
 	}
 	return h.master.Write(data)
 }
 
 func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.readMu.Lock()
+	defer h.readMu.Unlock()
+
+	// readMu is separate from writeMu, so a read and a write stay full-duplex.
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+
 	if h.master == nil {
-		return 0, fmt.Errorf("process %d is not on a terminal", h.PID)
+		return 0, fmt.Errorf("%w: process %d is not on a terminal", ErrClosed, h.PID)
 	}
 	return h.master.Read(p)
 }
 
-// Resize publishes a new terminal window size to the process, which sees the
-// change through SIGWINCH and a fresh termios stty size.
+// Resize publishes a new window size to the process (SIGWINCH). Held under
+// the state lock so it never resizes a master Wait is closing.
 func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+
 	if h.master == nil {
 		return nil
 	}

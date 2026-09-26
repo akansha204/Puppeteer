@@ -34,10 +34,18 @@ type ExitResult struct {
 	Signal   syscall.Signal
 }
 
+// ErrClosed reports a handle whose process has been reaped.
+var ErrClosed = errors.New("handle closed")
+
 type Handle struct {
 	PID int
 
-	mu     sync.Mutex
+	// stateMu guards the io fields against Wait's teardown; readMu and
+	// writeMu keep one read running alongside one write (full-duplex).
+	stateMu sync.RWMutex
+	readMu  sync.Mutex
+	writeMu sync.Mutex
+
 	done   chan struct{} //closed by Wait when the process dies
 	proc   *os.Process
 	cmd    *exec.Cmd
@@ -101,43 +109,56 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 }
 
 func (d *ProcessDriver) Write(h *Handle, data []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	// Held across the write so Wait cannot close the file mid-write.
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+
 	if h.stdin == nil {
-		return 0, fmt.Errorf("process %d has no stdin", h.PID)
+		return 0, fmt.Errorf("%w: process %d has no stdin", ErrClosed, h.PID)
 	}
 	return h.stdin.Write(data)
 }
 
 func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.readMu.Lock()
+	defer h.readMu.Unlock()
+
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+
 	if h.stdout == nil {
-		return 0, fmt.Errorf("process %d has no stdout", h.PID)
+		return 0, fmt.Errorf("%w: process %d has no stdout", ErrClosed, h.PID)
 	}
 	return h.stdout.Read(p)
 }
 
 func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.readMu.Lock()
+	defer h.readMu.Unlock()
+
+	// Held across the timeout so Wait cannot close the file mid-read.
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
 
 	f := h.master
 	if f == nil {
 		var ok bool
 		f, ok = h.stdout.(*os.File)
 		if !ok || f == nil {
-			return 0, fmt.Errorf("process %d has no pollable output", h.PID)
+			return 0, fmt.Errorf("%w: process %d has no pollable output", ErrClosed, h.PID)
 		}
 	}
 
-	fd := int(f.Fd()) // The fd must be non-blocking so the read underneath select returns
+	fd := int(f.Fd()) // non-blocking so the read under select returns immediately
 	if err := syscall.SetNonblock(fd, true); err != nil {
 		return 0, err
 	}
 	defer syscall.SetNonblock(fd, false)
 
-	rfds := &syscall.FdSet{} // FdSet is a fixed array of 64-bit words (linux), so a descriptor maps onto word fd/64 and a bit within it. The standard helper functions are not in the stdlib syscall package on linux.
+	rfds := &syscall.FdSet{} // watch fd: word fd/64, bit fd%64
 	rfds.Bits[fd/64] = 1 << (fd % 64)
 	tv := &syscall.Timeval{
 		Sec:  int64(timeout / time.Second),
@@ -173,8 +194,9 @@ func (d *ProcessDriver) Resize(_ *Handle, _, _ uint16) error {
 }
 
 func (d *ProcessDriver) Wait(h *Handle) ExitResult {
+	// cmd.Wait runs outside the locks; only teardown locks, once dead.
 	err := h.cmd.Wait()
-	h.mu.Lock()
+	h.stateMu.Lock()
 	h.proc = nil
 	h.cmd = nil
 	h.stdin = nil
@@ -183,7 +205,7 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 		h.master.Close()
 		h.master = nil
 	}
-	h.mu.Unlock()
+	h.stateMu.Unlock()
 	close(h.done)
 
 	res := ExitResult{Err: err}
