@@ -74,14 +74,39 @@ func (m *Manager) Stop(id AgentID) error {
 		return fmt.Errorf("no agent %q", id)
 	}
 	s := a.session
-	if s == nil || s.State != StateRunning {
+	if s == nil {
 		m.mu.Unlock()
 		return nil
 	}
-	s.stopReq = true
-	s.State = StateStopping
-	sd, h := s.done, s.h
+
+	switch s.State {
+	case StateStopped, StateCrashed:
+		m.mu.Unlock()
+		return nil
+
+	case StateRunning:
+		s.stopReq = true
+		s.State = StateStopping
+
+	case StateStopping:
+		// Retry/continue the same stop instead of claiming success.
+
+	case StateStarting:
+		m.mu.Unlock()
+		return fmt.Errorf("agent %q is still starting", id)
+
+	default:
+		m.mu.Unlock()
+		return fmt.Errorf("agent %q is in unexpected state %q", id, s.State)
+	}
+
+	sd := s.done
+	h := s.h
 	m.mu.Unlock()
+
+	if h == nil {
+		return fmt.Errorf("stop agent %q: stopping session has no driver handle", id)
+	}
 
 	if err := m.driver.Stop(context.Background(), h); err != nil {
 		return fmt.Errorf("stop agent %q: %w", id, err)
@@ -89,11 +114,10 @@ func (m *Manager) Stop(id AgentID) error {
 
 	select {
 	case <-sd:
+		return nil
 	case <-time.After(stopSettle):
 		return fmt.Errorf("stop agent %q: timed out waiting for process to settle", id)
 	}
-
-	return nil
 }
 
 func (m *Manager) Restart(id AgentID) error {

@@ -637,6 +637,69 @@ func TestStopSignalClassifiedAsStopped(t *testing.T) {
 	}
 }
 
+// A driver whose first Stop fails, to prove a failed stop does not wedge the
+// session in StateStopping (later Stops/restarts must retry, not claim success).
+type failingStopDriver struct {
+	driver.ProcessDriver
+	call int
+}
+
+func (d *failingStopDriver) Stop(ctx context.Context, h *driver.Handle) error {
+	d.call++
+	if d.call == 1 {
+		return fmt.Errorf("simulated stop failure")
+	}
+	return d.ProcessDriver.Stop(ctx, h)
+}
+
+func TestFailedStopDoesNotWedgeSession(t *testing.T) {
+	m := NewManager(&failingStopDriver{})
+	spec := AgentSpec{ID: "wedge", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := m.Stop(spec.ID); err == nil {
+		t.Fatal("expected the first Stop to fail")
+	}
+	if got, _ := m.Get(spec.ID); got.State != StateStopping {
+		t.Fatalf("state after failed Stop = %s, want %s", got.State, StateStopping)
+	}
+
+	if err := m.Stop(spec.ID); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	if got, _ := m.Get(spec.ID); got.State != StateStopped {
+		t.Fatalf("state = %s, want %s", got.State, StateStopped)
+	}
+}
+
+func TestRestartRecoversFromFailedStop(t *testing.T) {
+	m := NewManager(&failingStopDriver{})
+	spec := AgentSpec{ID: "recover", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.Stop(spec.ID); err == nil {
+		t.Fatal("expected Stop to fail")
+	}
+
+	if err := m.Restart(spec.ID); err != nil {
+		t.Fatalf("Restart after failed Stop: %v", err)
+	}
+	got, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if got.State != StateRunning {
+		t.Fatalf("state = %s, want %s", got.State, StateRunning)
+	}
+}
+
 func TestPTYAgentInteracts(t *testing.T) {
 	m := NewManager(driver.NewPTYDriver())
 	spec := AgentSpec{ID: "shell", Command: "sh"}
