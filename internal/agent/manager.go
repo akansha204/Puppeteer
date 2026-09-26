@@ -161,6 +161,20 @@ func (m *Manager) Read(id AgentID, p []byte) (int, error) {
 	return n, nil
 }
 
+func (m *Manager) ReadTimeout(id AgentID, p []byte, timeout time.Duration) (int, error) {
+	m.mu.Lock()
+	h := m.runningHandle(id)
+	m.mu.Unlock()
+	if h == nil {
+		return 0, fmt.Errorf("agent %q has no running session", id)
+	}
+	n, err := m.driver.ReadTimeout(h, p, timeout)
+	if err != nil {
+		return n, fmt.Errorf("read from agent %q: %w", id, err)
+	}
+	return n, nil
+}
+
 func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 	m.mu.Lock()
 	h := m.runningHandle(id)

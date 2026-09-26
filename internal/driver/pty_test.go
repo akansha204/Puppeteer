@@ -9,6 +9,60 @@ import (
 	"github.com/creack/pty"
 )
 
+func TestReadTimeoutDrainsThenGoesQuiet(t *testing.T) {
+	d := NewPTYDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop(context.Background(), h)
+
+	if _, err := d.Write(h, []byte("echo hi\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	buf := make([]byte, 256)
+	var got strings.Builder
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(got.String(), "hi") && time.Now().Before(deadline) {
+		n, err := d.ReadTimeout(h, buf, 300*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ReadTimeout: %v", err)
+		}
+		got.Write(buf[:n])
+	}
+	if !strings.Contains(got.String(), "hi") {
+		t.Fatalf("output %q does not contain hi", got.String())
+	}
+
+	// Drain everything until the process actually goes quiet (the shell
+	// prompt is usually still in flight right after the echo).
+	for {
+		n, err := d.ReadTimeout(h, buf, 200*time.Millisecond)
+		if err != nil {
+			t.Fatalf("drain ReadTimeout: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		got.Write(buf[:n])
+	}
+
+	// Output is drained now; bash sits at its prompt, so the read must
+	// return (0, nil) after the timeout instead of blocking forever.
+	start := time.Now()
+	n, err := d.ReadTimeout(h, buf, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("quiet ReadTimeout: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("quiet read returned %d bytes: %q", n, buf[:n])
+	}
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("quiet read returned too early: %v", elapsed)
+	}
+}
+
 func TestPTYDriverInteractiveShell(t *testing.T) {
 	d := NewPTYDriver()
 	h, err := d.Start(context.Background(), Spec{Path: "sh"})

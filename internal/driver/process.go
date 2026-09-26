@@ -50,6 +50,7 @@ type Driver interface {
 	Start(ctx context.Context, spec Spec) (*Handle, error)
 	Write(h *Handle, data []byte) (int, error)
 	Read(h *Handle, p []byte) (int, error)
+	ReadTimeout(h *Handle, p []byte, timeout time.Duration) (int, error)
 	Resize(h *Handle, rows, cols uint16) error
 	Stop(ctx context.Context, h *Handle) error
 	Wait(h *Handle) ExitResult
@@ -115,6 +116,54 @@ func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
 		return 0, fmt.Errorf("process %d has no stdout", h.PID)
 	}
 	return h.stdout.Read(p)
+}
+
+func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	f := h.master
+	if f == nil {
+		var ok bool
+		f, ok = h.stdout.(*os.File)
+		if !ok || f == nil {
+			return 0, fmt.Errorf("process %d has no pollable output", h.PID)
+		}
+	}
+
+	fd := int(f.Fd()) // The fd must be non-blocking so the read underneath select returns
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return 0, err
+	}
+	defer syscall.SetNonblock(fd, false)
+
+	rfds := &syscall.FdSet{} // FdSet is a fixed array of 64-bit words (linux), so a descriptor maps onto word fd/64 and a bit within it. The standard helper functions are not in the stdlib syscall package on linux.
+	rfds.Bits[fd/64] = 1 << (fd % 64)
+	tv := &syscall.Timeval{
+		Sec:  int64(timeout / time.Second),
+		Usec: int64(timeout%time.Second) / int64(time.Microsecond),
+	}
+	for {
+		n, err := syscall.Select(fd+1, rfds, nil, nil, tv)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 || rfds.Bits[fd/64]&(1<<(fd%64)) == 0 {
+			return 0, nil
+		}
+		break
+	}
+
+	for attempt := 0; ; attempt++ {
+		n, err := f.Read(p)
+		if err == syscall.EAGAIN && attempt < 3 {
+			continue
+		}
+		return n, err
+	}
 }
 
 // Resize is a no-op for a plain process: a window size is only meaningful
