@@ -103,17 +103,27 @@ func main() {
 				fmt.Println("usage: resize <id> <rows> <cols>")
 				continue
 			}
+
 			rows, err1 := strconv.Atoi(fields[2])
 			cols, err2 := strconv.Atoi(fields[3])
+
 			if err1 != nil || err2 != nil {
 				fmt.Println("resize: rows and cols must be numbers")
 				continue
 			}
+
+			if rows < 1 || rows > 65535 || cols < 1 || cols > 65535 {
+				fmt.Println("resize: rows and cols must be in the range 1..65535")
+				continue
+			}
+
 			id := agent.AgentID(fields[1])
+
 			if err := mgr.Resize(id, uint16(rows), uint16(cols)); err != nil {
 				fmt.Println("resize:", err)
 				continue
 			}
+
 			fmt.Printf("resized %s to %dx%d\n", id, rows, cols)
 
 		case "status":
@@ -128,6 +138,7 @@ func main() {
 			fmt.Println("commands: start <id> <cmd> [args...] | send <id> <text> | read <id> | resize <id> <rows> <cols> | stop <id> | restart <id> | status | quit")
 		}
 	}
+
 }
 
 // readAgent drains an agent's terminal: it blocks up to 200ms per chunk,

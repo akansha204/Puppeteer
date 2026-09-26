@@ -250,15 +250,22 @@ func (m *Manager) ReadTimeout(id AgentID, p []byte, timeout time.Duration) (int,
 }
 
 func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
+	if rows == 0 || cols == 0 {
+		return fmt.Errorf("resize agent %q: rows and cols must be > 0", id)
+	}
+
 	m.mu.Lock()
 	h := m.runningHandle(id)
 	m.mu.Unlock()
+
 	if h == nil {
 		return fmt.Errorf("agent %q has no running session", id)
 	}
+
 	if err := m.driver.Resize(h, rows, cols); err != nil {
 		return fmt.Errorf("resize agent %q: %w", id, err)
 	}
+
 	return nil
 }
 
