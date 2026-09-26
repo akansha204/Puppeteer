@@ -25,6 +25,8 @@ type AgentSpec struct {
 	ID      AgentID
 	Command string
 	Args    []string
+	Cwd     string
+	Env     []string
 }
 
 type session struct {
