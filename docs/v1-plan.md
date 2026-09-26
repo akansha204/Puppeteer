@@ -158,13 +158,16 @@ Introduce the smallest useful abstraction:
 
 ``` go
 type Driver interface {
-    Start(ctx context.Context, spec AgentSpec) (*Handle, error)
-    Write(ctx context.Context, data []byte) error
-    Resize(rows, cols uint16) error
-    Stop(ctx context.Context) error
-    Wait() ExitResult
+    Start(ctx context.Context, spec Spec) (*Handle, error)
+    Write(h *Handle, data []byte) (int, error)
+    Resize(h *Handle, rows, cols uint16) error
+    Stop(ctx context.Context, h *Handle) error
+    Wait(h *Handle) ExitResult
 }
 ```
+
+`Spec` carries `Path`, `Args`, `Cwd` and `Env` so launch details (working
+directory, environment, later a PTY) live behind the boundary.
 
 Do **not** build multiple drivers.
 
