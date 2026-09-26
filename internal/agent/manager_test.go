@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -576,7 +577,7 @@ func TestCrashSurvivesOverlappingStopRequest(t *testing.T) {
 	}
 	a := m.agents[spec.ID]
 	s1 := a.session
-	t.Cleanup(func() { _ = m.driver.Stop(s1.h) })
+	t.Cleanup(func() { _ = m.driver.Stop(context.Background(), s1.h) })
 
 	// A newer incarnation whose process crashed (exit 3) while a stop
 	// request was in flight. finish must prefer the crash.
@@ -614,7 +615,7 @@ func TestStopSignalClassifiedAsStopped(t *testing.T) {
 	}
 	a := m.agents[spec.ID]
 	s1 := a.session
-	t.Cleanup(func() { _ = m.driver.Stop(s1.h) })
+	t.Cleanup(func() { _ = m.driver.Stop(context.Background(), s1.h) })
 
 	s2 := &session{
 		ID:         s1.ID,
@@ -633,5 +634,25 @@ func TestStopSignalClassifiedAsStopped(t *testing.T) {
 	}
 	if snap.State != StateStopped {
 		t.Fatalf("state = %s, want %s", snap.State, StateStopped)
+	}
+}
+
+func TestStartForwardsCwdToDriver(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+	dir := t.TempDir()
+	spec := AgentSpec{ID: "box", Command: "sleep", Args: []string{"1000"}, Cwd: dir}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	snap, _ := m.Get(spec.ID)
+
+	got, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", snap.PID))
+	if err != nil {
+		t.Fatalf("read cwd: %v", err)
+	}
+	if got != dir {
+		t.Fatalf("cwd = %q, want %q", got, dir)
 	}
 }

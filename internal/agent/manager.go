@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"syscall"
@@ -37,7 +38,12 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	}
 	s := &session{ID: SessionID(spec.ID), Generation: gen + 1, State: StateStarting}
 
-	h, err := m.driver.Start(driver.Command{Path: spec.Command, Args: spec.Args})
+	h, err := m.driver.Start(context.Background(), driver.Spec{
+		Path: spec.Command,
+		Args: spec.Args,
+		Cwd:  spec.Cwd,
+		Env:  spec.Env,
+	})
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("start agent %q: %w", spec.ID, err)
 	}
@@ -77,7 +83,7 @@ func (m *Manager) Stop(id AgentID) error {
 	sd, h := s.done, s.h
 	m.mu.Unlock()
 
-	if err := m.driver.Stop(h); err != nil {
+	if err := m.driver.Stop(context.Background(), h); err != nil {
 		return fmt.Errorf("stop agent %q: %w", id, err)
 	}
 
