@@ -220,10 +220,9 @@ func pollTimeoutMillis(d time.Duration) int {
 	return int(ms)
 }
 
-// Resize is a no-op for a plain process: a window size is only meaningful
-// once a PTY driver puts the process on a terminal (TIOCSWINSZ)(Set this terminal's window size).
+// Resize is unsupported without a terminal; PTYDriver overrides it.
 func (d *ProcessDriver) Resize(_ *Handle, _, _ uint16) error {
-	return nil
+	return ErrUnsupported
 }
 
 func classifyExit(err error) ExitResult {
