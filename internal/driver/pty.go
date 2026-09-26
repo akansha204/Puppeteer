@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -116,4 +117,41 @@ func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
 		Rows: rows,
 		Cols: cols,
 	})
+}
+
+// Stop kills every process group in the session, not just the leader's, so
+// job-control background jobs die with the shell that owned them.
+func (d *PTYDriver) Stop(ctx context.Context, h *Handle) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	grace := d.Grace
+	if grace <= 0 {
+		grace = defaultGrace
+	}
+
+	if err := signalSessionProcessGroups(h.PID, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("signal PTY session %d: %w", h.PID, err)
+	}
+
+	select {
+	case <-h.done:
+		return nil
+	case <-time.After(grace):
+	case <-ctx.Done():
+	}
+
+	if err := signalSessionProcessGroups(h.PID, syscall.SIGKILL); err != nil {
+		return fmt.Errorf("kill PTY session %d: %w", h.PID, err)
+	}
+
+	select {
+	case <-h.done:
+		return nil
+	case <-time.After(killTimeout):
+		return fmt.Errorf("PTY session %d did not terminate after SIGKILL", h.PID)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

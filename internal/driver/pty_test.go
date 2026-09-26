@@ -2,7 +2,12 @@ package driver
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -71,6 +76,112 @@ func TestBlockingReadDoesNotBlockWrite(t *testing.T) {
 			<-got
 		})
 	}
+}
+
+// A background job running under interactive job control gets its own process
+// group inside the terminal's session. Stop must reach that group too, not
+// just the session leader's: otherwise the job survives a stopped shell.
+func TestStopKillsJobControlProcessGroup(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available for job-control setup")
+	}
+
+	d := NewPTYDriver()
+	h, err := d.Start(context.Background(), Spec{Path: bash})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The manager-equivalent: a monitor owns Wait concurrently with Stop.
+	wres := make(chan ExitResult, 1)
+	go func() { wres <- d.Wait(h) }()
+
+	pidFile := fmt.Sprintf("%s/job.pid", t.TempDir())
+	// Interactive bash puts background jobs in their own process group;
+	// echo $! captures the job pid so the test can inspect and assert it.
+	if _, err := d.Write(h, []byte(fmt.Sprintf("sleep 1000 & echo $! > %s\n", pidFile))); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	var raw string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, err := os.ReadFile(pidFile)
+		if err == nil {
+			raw = strings.TrimSpace(string(b))
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job pid file never appeared: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	job, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("bad job pid %q: %v", raw, err)
+	}
+	if !processAlive(job) {
+		t.Fatalf("job %d not running before stop", job)
+	}
+
+	// Sanity: the job is in a real job-control group inside the session.
+	// If the shell didn't create a separate group, this test can't assert
+	// anything about cross-group teardown.
+	sid, pgrp, err := procSessionGroup(job)
+	if err != nil {
+		t.Fatalf("read job stat: %v", err)
+	}
+	if sid != h.PID {
+		t.Fatalf("job session %d != pty session %d", sid, h.PID)
+	}
+	if pgrp == sid {
+		t.Skip("shell did not put the job in its own process group")
+	}
+
+	if err := d.Stop(context.Background(), h); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if processAlive(job) {
+		t.Fatalf("job %d (own process group) survived the session stop", job)
+	}
+	if res := <-wres; res.Signal != syscall.SIGTERM && res.Signal != syscall.SIGKILL {
+		t.Fatalf("shell did not die by a stop signal: %+v", res)
+	}
+}
+
+func processAlive(pid int) bool {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	s := string(raw)
+	fields := strings.Fields(s[strings.LastIndex(s, ")")+1:])
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] != "Z"
+}
+
+// procSessionGroup returns the session id and process group of pid.
+func procSessionGroup(pid int) (sid, pgrp int, err error) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, 0, err
+	}
+	s := string(raw)
+	fields := strings.Fields(s[strings.LastIndex(s, ")")+1:])
+	if len(fields) < 4 {
+		return 0, 0, fmt.Errorf("stat has %d fields", len(fields))
+	}
+	pgrp, err = strconv.Atoi(fields[2])
+	if err != nil {
+		return 0, 0, err
+	}
+	sid, err = strconv.Atoi(fields[3])
+	if err != nil {
+		return 0, 0, err
+	}
+	return sid, pgrp, nil
 }
 
 func TestReadTimeoutDrainsThenGoesQuiet(t *testing.T) {
