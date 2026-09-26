@@ -55,12 +55,15 @@ Role of each layer:
 ## Lifecycle state machine
 
 ``` text
-idle ──Start──► running ──Stop──► stopped ──Start──► running
-                   │
-                   │ process exits on its own
-                   ▼
-                crashed ──Start──► running
+idle ──Start──► running ──Stop──► stopping ──die──► stopped ──Start──► running
+                │                                        │
+                │ process exits on its own               │
+                ▼                                        ▼
+             crashed ──Start──► running                  
 ```
+`stopping` is a transient state while Stop waits on the process to settle;
+the classification of the exit (stopped vs crashed) is decided by the
+monitor from the actual `ExitResult`, not by the user's intent.
 
 `Restart` = `Stop` then `Start`. It works from any non-running state
 and always produces a fresh generation of the process.
