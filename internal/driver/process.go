@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -34,8 +36,10 @@ type ExitResult struct {
 	Signal   syscall.Signal
 }
 
-// ErrClosed reports a handle whose process has been reaped.
-var ErrClosed = errors.New("handle closed")
+var (
+	ErrClosed      = errors.New("driver handle is closed")
+	ErrUnsupported = errors.New("operation unsupported by driver")
+)
 
 type Handle struct {
 	PID int
@@ -136,55 +140,70 @@ func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
 }
 
 func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) (int, error) {
+	if timeout < 0 {
+		return 0, fmt.Errorf("timeout must be >= 0")
+	}
+
 	h.readMu.Lock()
 	defer h.readMu.Unlock()
 
-	// Held across the timeout so Wait cannot close the file mid-read.
+	// Held across the poll so Wait cannot close the fd mid-read.
 	h.stateMu.RLock()
 	defer h.stateMu.RUnlock()
 
 	f := h.master
 	if f == nil {
-		var ok bool
-		f, ok = h.stdout.(*os.File)
-		if !ok || f == nil {
-			return 0, fmt.Errorf("%w: process %d has no pollable output", ErrClosed, h.PID)
-		}
+		f, _ = h.stdout.(*os.File)
+	}
+	if f == nil {
+		return 0, fmt.Errorf("%w: process %d has no pollable output", ErrClosed, h.PID)
 	}
 
-	fd := int(f.Fd()) // non-blocking so the read under select returns immediately
-	if err := syscall.SetNonblock(fd, true); err != nil {
-		return 0, err
-	}
-	defer syscall.SetNonblock(fd, false)
-
-	rfds := &syscall.FdSet{} // watch fd: word fd/64, bit fd%64
-	rfds.Bits[fd/64] = 1 << (fd % 64)
-	tv := &syscall.Timeval{
-		Sec:  int64(timeout / time.Second),
-		Usec: int64(timeout%time.Second) / int64(time.Microsecond),
-	}
+	// poll(2) watches a single fd by number, so there is no FD_SETSIZE
+	// (1024) ceiling like select(2). POLLHUP|POLLERR are watched so a dying
+	// process ends the wait and the read returns its final EOF/EIO.
+	deadline := time.Now().Add(timeout)
 	for {
-		n, err := syscall.Select(fd+1, rfds, nil, nil, tv)
-		if err == syscall.EINTR {
+		remaining := time.Until(deadline)
+		if timeout == 0 {
+			remaining = 0
+		} else if remaining <= 0 {
+			return 0, nil
+		}
+
+		fds := []unix.PollFd{{
+			Fd:     int32(f.Fd()),
+			Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR,
+		}}
+		n, err := unix.Poll(fds, pollTimeoutMillis(remaining))
+		if err == unix.EINTR {
 			continue
 		}
 		if err != nil {
 			return 0, err
 		}
-		if n == 0 || rfds.Bits[fd/64]&(1<<(fd%64)) == 0 {
+		if n == 0 {
 			return 0, nil
 		}
-		break
-	}
-
-	for attempt := 0; ; attempt++ {
-		n, err := f.Read(p)
-		if err == syscall.EAGAIN && attempt < 3 {
-			continue
+		if revents := fds[0].Revents; revents&unix.POLLNVAL != 0 {
+			return 0, fmt.Errorf("%w: process %d output fd is invalid", ErrClosed, h.PID)
 		}
-		return n, err
+		if revents := fds[0].Revents; revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			return f.Read(p)
+		}
 	}
+}
+
+func pollTimeoutMillis(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	ms := (d + time.Millisecond - 1) / time.Millisecond
+	const maxPollMillis = int64(1<<31 - 1)
+	if int64(ms) > maxPollMillis {
+		return int(maxPollMillis)
+	}
+	return int(ms)
 }
 
 // Resize is a no-op for a plain process: a window size is only meaningful
