@@ -268,6 +268,46 @@ Do not add orchestration yet.
 Pony can reliably start, interact with, and stop one interactive
 agent.
 
+### Delivered
+
+-   [x] `internal/driver/pty.go` — `PTYDriver` runs a process on a
+    real pseudo-terminal (`pty.Open`, slave on stdio, `Setsid` /
+    `Setctty`).
+-   [x] Terminal window size — 24x80 default on start,
+    `Resize` via `TIOCSWINSZ`, verified with `TIOCGWINSZ`.
+-   [x] Full I/O surface on the driver: `Start`, `Write`, `Read`,
+    `ReadTimeout`, `Resize`, `Wait`, `Stop`.
+-   [x] `ReadTimeout` — a read that returns when the process has been
+    quiet for a deadline (`select(2)` on the fd), so a REPL `read`
+    never blocks forever on an idle agent.
+-   [x] Manager plumbing: `Write`, `Read`, `Resize`, `ReadTimeout`
+    on agents.
+-   [x] REPL commands: `send <id> <text>`, `read <id>`,
+    `resize <id> <rows> <cols>`; the CLI starts agents on a PTY.
+-   [x] Acceptance ride passes end to end: `start sh` → `echo hello`
+    → read `hello` / prompt → resize → `exit` → clean stop, no
+    stray processes.
+-   [x] Concurrent I/O is safe: a mutex on `Handle` serializes
+    `Read`/`Write`/`Resize` against `Wait`'s fd teardown (race-tested).
+-   [x] **Dependency decision:** Pony now depends on
+    `github.com/creack/pty` (MIT) instead of hand-rolling `/dev/ptmx`
+    ioctls. This is the first non-stdlib dependency and a deliberate
+    platform (Linux) choice.
+
+``` text
+pony> start shell sh
+started pid=41283 state=running
+pony> send shell echo hello
+sent shell: echo hello
+pony> read shell
+echo hello
+sh-5.3$ echo hello
+hello
+sh-5.3$
+pony> send shell exit
+pony>
+```
+
 ------------------------------------------------------------------------
 
 # Phase 6 — Terminal Attach / Detach
