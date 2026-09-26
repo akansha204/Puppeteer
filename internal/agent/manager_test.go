@@ -28,27 +28,37 @@ func processAlive(pid int) bool {
 	return fields[0] != "Z"
 }
 
-func waitForState(t *testing.T, m *Manager, a *Agent, want RuntimeState) {
+func waitForState(t *testing.T, m *Manager, id AgentID, want RuntimeState) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for m.Snapshot(a).State != want && time.Now().Before(deadline) {
+	for {
+		snap, ok := m.Get(id)
+		if ok && snap.State == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := m.Snapshot(a).State; got != want {
-		t.Fatalf("state = %s, want %s", got, want)
+	snap, ok := m.Get(id)
+	if !ok {
+		t.Fatalf("agent %s missing, want state %s", id, want)
+	}
+	if snap.State != want {
+		t.Fatalf("state = %s, want %s", snap.State, want)
 	}
 }
 
 func TestStartSpawnsRealProcess(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	snap := m.Snapshot(a)
 	if snap.PID == 0 {
 		t.Fatal("expected a real PID")
 	}
@@ -62,24 +72,28 @@ func TestStartSpawnsRealProcess(t *testing.T) {
 
 func TestStopTerminatesProcess(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	pid := m.Snapshot(a).PID
+	pid := snap.PID
 
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	snap := m.Snapshot(a)
-	if snap.State != StateStopped {
-		t.Fatalf("state = %s, want %s", snap.State, StateStopped)
+	got, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing after Stop")
 	}
-	if snap.PID != 0 {
-		t.Fatalf("PID = %d, want 0 after Stop", snap.PID)
+	if got.State != StateStopped {
+		t.Fatalf("state = %s, want %s", got.State, StateStopped)
+	}
+	if got.PID != 0 {
+		t.Fatalf("PID = %d, want 0 after Stop", got.PID)
 	}
 	if processAlive(pid) {
 		t.Fatalf("process %d is still alive after Stop", pid)
@@ -88,57 +102,62 @@ func TestStopTerminatesProcess(t *testing.T) {
 
 func TestRestartSpawnsFreshProcess(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	oldPID := m.Snapshot(a).PID
+	oldPID := snap.PID
 
-	if err := m.Restart(a); err != nil {
+	if err := m.Restart(spec.ID); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
 
-	snap := m.Snapshot(a)
+	got, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing after Restart")
+	}
 	if processAlive(oldPID) {
 		t.Fatalf("old process %d still alive after restart", oldPID)
 	}
-	if !processAlive(snap.PID) || snap.PID == oldPID {
-		t.Fatalf("new process not healthy: pid=%d oldPID=%d", snap.PID, oldPID)
+	if !processAlive(got.PID) || got.PID == oldPID {
+		t.Fatalf("new process not healthy: pid=%d oldPID=%d", got.PID, oldPID)
 	}
-	if snap.State != StateRunning {
-		t.Fatalf("state = %s, want %s", snap.State, StateRunning)
+	if got.State != StateRunning {
+		t.Fatalf("state = %s, want %s", got.State, StateRunning)
 	}
 }
 
 func TestMonitorDetectsCrash(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "boom", Command: "sh", Args: []string{"-c", "exit 1"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
-	if err := m.Start(a); err != nil {
+	spec := AgentSpec{ID: "boom", Command: "sh", Args: []string{"-c", "exit 1"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	waitForState(t, m, a, StateCrashed)
+	waitForState(t, m, spec.ID, StateCrashed)
 }
 
 func TestTwoAgentsRunIndependently(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
-	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
+	alpha := AgentSpec{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
+	beta := AgentSpec{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
-		_ = m.Stop(a)
-		_ = m.Stop(b)
+		_ = m.Stop(alpha.ID)
+		_ = m.Stop(beta.ID)
 	})
 
-	if err := m.Start(a); err != nil {
+	sa, err := m.Start(alpha)
+	if err != nil {
 		t.Fatalf("Start alpha: %v", err)
 	}
-	if err := m.Start(b); err != nil {
+	sb, err := m.Start(beta)
+	if err != nil {
 		t.Fatalf("Start beta: %v", err)
 	}
 
-	sa, sb := m.Snapshot(a), m.Snapshot(b)
 	if sa.PID == sb.PID {
 		t.Fatalf("PIDs collided: %d", sa.PID)
 	}
@@ -155,22 +174,24 @@ func TestTwoAgentsRunIndependently(t *testing.T) {
 
 func TestStopOneAgentDoesNotAffectOther(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
-	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
+	alpha := AgentSpec{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
+	beta := AgentSpec{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
-		_ = m.Stop(a)
-		_ = m.Stop(b)
+		_ = m.Stop(alpha.ID)
+		_ = m.Stop(beta.ID)
 	})
 
-	if err := m.Start(a); err != nil {
+	sa, err := m.Start(alpha)
+	if err != nil {
 		t.Fatalf("Start alpha: %v", err)
 	}
-	if err := m.Start(b); err != nil {
+	sb, err := m.Start(beta)
+	if err != nil {
 		t.Fatalf("Start beta: %v", err)
 	}
-	alphaPID, betaPID := m.Snapshot(a).PID, m.Snapshot(b).PID
+	alphaPID, betaPID := sa.PID, sb.PID
 
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(alpha.ID); err != nil {
 		t.Fatalf("Stop alpha: %v", err)
 	}
 
@@ -180,102 +201,101 @@ func TestStopOneAgentDoesNotAffectOther(t *testing.T) {
 	if !processAlive(betaPID) {
 		t.Fatalf("beta process %d died when alpha was stopped", betaPID)
 	}
-	if got := m.Snapshot(a).State; got != StateStopped {
-		t.Fatalf("alpha = %s, want %s", got, StateStopped)
+	if got, _ := m.Get(alpha.ID); got.State != StateStopped {
+		t.Fatalf("alpha = %s, want %s", got.State, StateStopped)
 	}
-	if got := m.Snapshot(b).State; got != StateRunning {
-		t.Fatalf("beta = %s, want %s", got, StateRunning)
+	if got, _ := m.Get(beta.ID); got.State != StateRunning {
+		t.Fatalf("beta = %s, want %s", got.State, StateRunning)
 	}
 }
 
 func TestRestartOneAgentDoesNotAffectOther(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
-	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
+	alpha := AgentSpec{ID: "alpha", Command: "sleep", Args: []string{"1000"}}
+	beta := AgentSpec{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
-		_ = m.Stop(a)
-		_ = m.Stop(b)
+		_ = m.Stop(alpha.ID)
+		_ = m.Stop(beta.ID)
 	})
 
-	if err := m.Start(a); err != nil {
+	sa, err := m.Start(alpha)
+	if err != nil {
 		t.Fatalf("Start alpha: %v", err)
 	}
-	if err := m.Start(b); err != nil {
+	sb, err := m.Start(beta)
+	if err != nil {
 		t.Fatalf("Start beta: %v", err)
 	}
-	oldPID, betaPID := m.Snapshot(a).PID, m.Snapshot(b).PID
+	oldPID, betaPID := sa.PID, sb.PID
 
-	if err := m.Restart(a); err != nil {
+	if err := m.Restart(alpha.ID); err != nil {
 		t.Fatalf("Restart alpha: %v", err)
 	}
 
-	snap := m.Snapshot(a)
+	got, _ := m.Get(alpha.ID)
 	if processAlive(oldPID) {
 		t.Fatalf("old alpha process %d still alive after restart", oldPID)
 	}
-	if !processAlive(snap.PID) || snap.PID == oldPID {
-		t.Fatalf("alpha not healthy after restart: pid=%d oldPID=%d", snap.PID, oldPID)
+	if !processAlive(got.PID) || got.PID == oldPID {
+		t.Fatalf("alpha not healthy after restart: pid=%d oldPID=%d", got.PID, oldPID)
 	}
-	if beta := m.Snapshot(b); beta.PID != betaPID {
-		t.Fatalf("beta PID changed (%d → %d) while alpha restarted", betaPID, beta.PID)
-	} else if beta.State != StateRunning {
-		t.Fatalf("beta = %s, want %s", beta.State, StateRunning)
+	if gb, _ := m.Get(beta.ID); gb.PID != betaPID {
+		t.Fatalf("beta PID changed (%d → %d) while alpha restarted", betaPID, gb.PID)
+	} else if gb.State != StateRunning {
+		t.Fatalf("beta = %s, want %s", gb.State, StateRunning)
 	}
 }
 
 func TestNaturalExitDoesNotAffectOther(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "alpha", Command: "sh", Args: []string{"-c", "exit 1"}}
-	b := &Agent{ID: "beta", Command: "sleep", Args: []string{"1000"}}
+	alpha := AgentSpec{ID: "alpha", Command: "sh", Args: []string{"-c", "exit 1"}}
+	beta := AgentSpec{ID: "beta", Command: "sleep", Args: []string{"1000"}}
 	t.Cleanup(func() {
-		_ = m.Stop(a)
-		_ = m.Stop(b)
+		_ = m.Stop(alpha.ID)
+		_ = m.Stop(beta.ID)
 	})
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(alpha); err != nil {
 		t.Fatalf("Start alpha: %v", err)
 	}
-	if err := m.Start(b); err != nil {
+	sb, err := m.Start(beta)
+	if err != nil {
 		t.Fatalf("Start beta: %v", err)
 	}
-	betaPID := m.Snapshot(b).PID
+	betaPID := sb.PID
 
-	waitForState(t, m, a, StateCrashed)
+	waitForState(t, m, alpha.ID, StateCrashed)
 
 	if !processAlive(betaPID) {
 		t.Fatalf("beta process %d died when alpha exited naturally", betaPID)
 	}
-	if got := m.Snapshot(b).State; got != StateRunning {
-		t.Fatalf("beta = %s, want %s", got, StateRunning)
+	if got, _ := m.Get(beta.ID); got.State != StateRunning {
+		t.Fatalf("beta = %s, want %s", got.State, StateRunning)
 	}
 }
 
 func TestDuplicateIDRejected(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "dup", Command: "sleep", Args: []string{"1000"}}
-	b := &Agent{ID: "dup", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() {
-		_ = m.Stop(a)
-		_ = m.Stop(b)
-	})
+	spec := AgentSpec{ID: "dup", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	pid := m.Snapshot(a).PID
 
-	if err := m.Start(b); err == nil {
+	if _, err := m.Start(spec); err == nil {
 		t.Fatal("expected duplicate id to be rejected, got nil error")
 	}
 
-	if got, _ := m.Get("dup"); got != a {
-		t.Fatalf("registry no longer points at the original agent")
+	if _, ok := m.Get(spec.ID); !ok {
+		t.Fatal("registry no longer tracks the original agent")
 	}
-	if !processAlive(pid) {
-		t.Fatalf("original process %d died or was never tracked", pid)
+	if !processAlive(snap.PID) {
+		t.Fatalf("original process %d died or was never tracked", snap.PID)
 	}
-	if got := m.Snapshot(a).State; got != StateRunning {
-		t.Fatalf("alpha = %s, want %s", got, StateRunning)
+	if got, _ := m.Get(spec.ID); got.State != StateRunning {
+		t.Fatalf("agent = %s, want %s", got.State, StateRunning)
 	}
 }
 
@@ -283,10 +303,10 @@ func TestStopKillsChildProcesses(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
 	childPidFile := filepath.Join(t.TempDir(), "child.pid")
 	sh := fmt.Sprintf("sleep 1000 & echo $! > %s; wait", childPidFile)
-	a := &Agent{ID: "parent", Command: "sh", Args: []string{"-c", sh}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "parent", Command: "sh", Args: []string{"-c", sh}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -311,15 +331,15 @@ func TestStopKillsChildProcesses(t *testing.T) {
 		t.Fatalf("child %d not running before stop", childPID)
 	}
 
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
 	if processAlive(childPID) {
 		t.Fatalf("child process %d survived Stop", childPID)
 	}
-	if got := m.Snapshot(a).State; got != StateStopped {
-		t.Fatalf("state = %s, want %s", got, StateStopped)
+	if got, _ := m.Get(spec.ID); got.State != StateStopped {
+		t.Fatalf("state = %s, want %s", got.State, StateStopped)
 	}
 }
 
@@ -344,13 +364,14 @@ func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
 	})
 
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sticky", Command: os.Args[0], Args: []string{"-test.run", "^TestStickyProcessHelper$"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sticky", Command: os.Args[0], Args: []string{"-test.run", "^TestStickyProcessHelper$"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	pid := m.Snapshot(a).PID
+	pid := snap.PID
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -364,7 +385,7 @@ func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
 	}
 
 	started := time.Now()
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	elapsed := time.Since(started)
@@ -375,45 +396,46 @@ func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
 	if processAlive(pid) {
 		t.Fatalf("process group leader %d survived Stop", pid)
 	}
-	if got := m.Snapshot(a).State; got != StateStopped {
-		t.Fatalf("state = %s, want %s", got, StateStopped)
+	if got, _ := m.Get(spec.ID); got.State != StateStopped {
+		t.Fatalf("state = %s, want %s", got.State, StateStopped)
 	}
 }
 
 func TestStopTwiceIsSafe(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("second Stop: %v", err)
 	}
-	if got := m.Snapshot(a).State; got != StateStopped {
-		t.Fatalf("state = %s, want %s", got, StateStopped)
+	if got, _ := m.Get(spec.ID); got.State != StateStopped {
+		t.Fatalf("state = %s, want %s", got.State, StateStopped)
 	}
 }
 
 func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	snap, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seen := map[int]bool{m.Snapshot(a).PID: true}
+	seen := map[int]bool{snap.PID: true}
 
 	for i := 0; i < 3; i++ {
-		if err := m.Restart(a); err != nil {
+		if err := m.Restart(spec.ID); err != nil {
 			t.Fatalf("Restart %d: %v", i, err)
 		}
-		snap := m.Snapshot(a)
+		snap, _ := m.Get(spec.ID)
 		if seen[snap.PID] {
 			t.Fatalf("pid %d reused across generations", snap.PID)
 		}
@@ -429,21 +451,21 @@ func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
 
 func TestSessionStableAcrossGenerations(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "evolve", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "evolve", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	s1, err := m.Start(spec)
+	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	s1 := m.Snapshot(a)
 	if s1.Generation != 1 {
 		t.Fatalf("generation = %d, want 1", s1.Generation)
 	}
 
-	if err := m.Restart(a); err != nil {
+	if err := m.Restart(spec.ID); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	s2 := m.Snapshot(a)
+	s2, _ := m.Get(spec.ID)
 	if s2.AgentID != s1.AgentID || s2.SessionID != s1.SessionID {
 		t.Fatalf("identity changed across restart: %+v → %+v", s1, s2)
 	}
@@ -454,10 +476,10 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 		t.Fatalf("expected a fresh pid, got %d (old %d)", s2.PID, s1.PID)
 	}
 
-	if err := m.Restart(a); err != nil {
+	if err := m.Restart(spec.ID); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	s3 := m.Snapshot(a)
+	s3, _ := m.Get(spec.ID)
 	if s3.Generation != 3 {
 		t.Fatalf("generation = %d, want 3", s3.Generation)
 	}
@@ -471,31 +493,39 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 
 func TestStaleSessionCannotMutateNewState(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "flip", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "flip", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := m.Stop(a); err != nil {
+	if err := m.Stop(spec.ID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	old := a.session
+
+	flip := m.agents[spec.ID]
+	if flip == nil {
+		t.Fatal("expected the agent in the registry")
+	}
+	old := flip.session
 	if old == nil {
 		t.Fatal("expected a first session after Start")
 	}
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if a.session == old {
+	if flip.session == old {
 		t.Fatal("expected a new session for the new generation")
 	}
 
-	m.finish(a, old, nil)
-	m.finish(a, old, fmt.Errorf("exit status 1"))
+	m.finish(flip, old, nil)
+	m.finish(flip, old, fmt.Errorf("exit status 1"))
 
-	snap := m.Snapshot(a)
+	snap, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
 	if snap.Generation != 2 {
 		t.Fatalf("generation = %d, want 2", snap.Generation)
 	}
@@ -509,19 +539,23 @@ func TestStaleSessionCannotMutateNewState(t *testing.T) {
 
 func TestSnapshotIsACopy(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
-	a := &Agent{ID: "copy", Command: "sleep", Args: []string{"1000"}}
-	t.Cleanup(func() { _ = m.Stop(a) })
+	spec := AgentSpec{ID: "copy", Command: "sleep", Args: []string{"1000"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
 
-	if err := m.Start(a); err != nil {
+	if _, err := m.Start(spec); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	snap := m.Snapshot(a)
+	snap, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
 	snap.State = StateStopped
 	snap.PID = 999999
 	snap.Generation = 77
 
-	if got := m.Snapshot(a); got.State != StateRunning {
+	got, _ := m.Get(spec.ID)
+	if got.State != StateRunning {
 		t.Fatalf("mutating a snapshot leaked into live state: %s", got.State)
 	} else if got.PID == 999999 || got.Generation == 77 {
 		t.Fatalf("mutating a snapshot leaked into live metadata")

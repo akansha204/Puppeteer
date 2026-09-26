@@ -14,8 +14,8 @@ func main() {
 	mgr := agent.NewManager(driver.NewProcessDriver())
 
 	defer func() {
-		for _, a := range mgr.GetAgents() {
-			if err := mgr.Stop(a); err != nil {
+		for _, snap := range mgr.Snapshots() {
+			if err := mgr.Stop(snap.AgentID); err != nil {
 				fmt.Println("cleanup:", err)
 			}
 		}
@@ -38,37 +38,29 @@ func main() {
 				fmt.Println("usage: start <id> <command> [args...]")
 				continue
 			}
-			a := &agent.Agent{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]}
-			if err := mgr.Start(a); err != nil {
+			spec := agent.AgentSpec{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]}
+			snap, err := mgr.Start(spec)
+			if err != nil {
 				fmt.Println("start:", err)
 				continue
 			}
-			snap := mgr.Snapshot(a)
 			fmt.Printf("started pid=%d state=%s\n", snap.PID, snap.State)
 
 		case "stop":
-			a, ok := mgr.Get(agent.AgentID(fields[1]))
-			if !ok {
-				fmt.Printf("no agent %q\n", fields[1])
-				continue
-			}
-			if err := mgr.Stop(a); err != nil {
+			id := agent.AgentID(fields[1])
+			if err := mgr.Stop(id); err != nil {
 				fmt.Println("stop:", err)
 				continue
 			}
-			fmt.Printf("stopped %s\n", a.ID)
+			fmt.Printf("stopped %s\n", id)
 
 		case "restart":
-			a, ok := mgr.Get(agent.AgentID(fields[1]))
-			if !ok {
-				fmt.Printf("no agent %q\n", fields[1])
-				continue
-			}
-			if err := mgr.Restart(a); err != nil {
+			id := agent.AgentID(fields[1])
+			if err := mgr.Restart(id); err != nil {
 				fmt.Println("restart:", err)
 				continue
 			}
-			snap := mgr.Snapshot(a)
+			snap, _ := mgr.Get(id)
 			fmt.Printf("restarted pid=%d state=%s\n", snap.PID, snap.State)
 
 		case "status":

@@ -20,12 +20,10 @@ const (
 	StateStopped  RuntimeState = "stopped"
 )
 
-type Agent struct {
+type AgentSpec struct {
 	ID      AgentID
 	Command string
 	Args    []string
-
-	session *session
 }
 
 type session struct {
@@ -39,6 +37,11 @@ type session struct {
 	h        *driver.Handle
 	done     chan struct{} //closed by monitor when the process dies
 	stopping bool
+}
+
+type agent struct {
+	spec    AgentSpec
+	session *session
 }
 
 type SessionSnapshot struct {

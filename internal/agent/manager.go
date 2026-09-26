@@ -10,36 +10,35 @@ import (
 
 type Manager struct {
 	mu     sync.Mutex
-	agents map[AgentID]*Agent
+	agents map[AgentID]*agent
 	driver driver.Driver
 }
 
 const stopSettle = 2 * time.Second
 
 func NewManager(d driver.Driver) *Manager {
-	return &Manager{agents: make(map[AgentID]*Agent), driver: d}
+	return &Manager{agents: make(map[AgentID]*agent), driver: d}
 }
 
-func (m *Manager) Start(a *Agent) error {
+func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if existing, ok := m.agents[a.ID]; ok && existing != a {
-		return fmt.Errorf("agent %q already exists", a.ID)
-	}
-	if s := a.session; s != nil && (s.State == StateRunning || s.State == StateStarting) {
-		return fmt.Errorf("agent %q is already %s", a.ID, s.State)
+	if a, ok := m.agents[spec.ID]; ok {
+		if s := a.session; s != nil && (s.State == StateRunning || s.State == StateStarting) {
+			return SessionSnapshot{}, fmt.Errorf("agent %q is already %s", spec.ID, s.State)
+		}
 	}
 
 	var gen uint64
-	if a.session != nil {
+	if a := m.agents[spec.ID]; a != nil && a.session != nil {
 		gen = a.session.Generation
 	}
-	s := &session{ID: SessionID(a.ID), Generation: gen + 1, State: StateStarting}
+	s := &session{ID: SessionID(spec.ID), Generation: gen + 1, State: StateStarting}
 
-	h, err := m.driver.Start(driver.Command{Path: a.Command, Args: a.Args})
+	h, err := m.driver.Start(driver.Command{Path: spec.Command, Args: spec.Args})
 	if err != nil {
-		return fmt.Errorf("start agent %q: %w", a.ID, err)
+		return SessionSnapshot{}, fmt.Errorf("start agent %q: %w", spec.ID, err)
 	}
 
 	s.PID = h.PID
@@ -48,15 +47,25 @@ func (m *Manager) Start(a *Agent) error {
 	s.done = make(chan struct{})
 	s.State = StateRunning
 
+	a := m.agents[spec.ID]
+	if a == nil {
+		a = &agent{spec: spec}
+		m.agents[spec.ID] = a
+	}
+	a.spec = spec
 	a.session = s
-	m.agents[a.ID] = a
 	go m.monitor(a, s)
 
-	return nil
+	return snapshotOf(a), nil
 }
 
-func (m *Manager) Stop(a *Agent) error {
+func (m *Manager) Stop(id AgentID) error {
 	m.mu.Lock()
+	a := m.agents[id]
+	if a == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no agent %q", id)
+	}
 	s := a.session
 	if s == nil || s.State != StateRunning {
 		m.mu.Unlock()
@@ -67,35 +76,61 @@ func (m *Manager) Stop(a *Agent) error {
 	m.mu.Unlock()
 
 	if err := m.driver.Stop(h); err != nil {
-		return fmt.Errorf("stop agent %q: %w", a.ID, err)
+		return fmt.Errorf("stop agent %q: %w", id, err)
 	}
 
 	select {
 	case <-sd:
 	case <-time.After(stopSettle):
-		return fmt.Errorf("stop agent %q: timed out waiting for process to settle", a.ID)
+		return fmt.Errorf("stop agent %q: timed out waiting for process to settle", id)
 	}
 
 	return nil
 }
 
-func (m *Manager) Restart(a *Agent) error {
-	if err := m.Stop(a); err != nil {
+func (m *Manager) Restart(id AgentID) error {
+	m.mu.Lock()
+	a := m.agents[id]
+	m.mu.Unlock()
+	if a == nil {
+		return fmt.Errorf("no agent %q", id)
+	}
+	if err := m.Stop(id); err != nil {
 		return err
 	}
-	return m.Start(a)
+	_, err := m.Start(a.spec)
+	return err
 }
 
-func (m *Manager) Snapshot(a *Agent) SessionSnapshot {
+func (m *Manager) Get(id AgentID) (SessionSnapshot, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	a := m.agents[id]
+	if a == nil {
+		return SessionSnapshot{}, false
+	}
+	return snapshotOf(a), true
+}
+
+func (m *Manager) Snapshots() []SessionSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]SessionSnapshot, 0, len(m.agents))
+	for _, a := range m.agents {
+		out = append(out, snapshotOf(a))
+	}
+	return out
+}
+
+func snapshotOf(a *agent) SessionSnapshot {
 	s := a.session
 	if s == nil {
-		return SessionSnapshot{AgentID: a.ID, SessionID: SessionID(a.ID), State: StateIdle}
+		return SessionSnapshot{AgentID: a.spec.ID, SessionID: SessionID(a.spec.ID), State: StateIdle}
 	}
 	return SessionSnapshot{
-		AgentID:    a.ID,
+		AgentID:    a.spec.ID,
 		SessionID:  s.ID,
 		Generation: s.Generation,
 		State:      s.State,
@@ -105,54 +140,12 @@ func (m *Manager) Snapshot(a *Agent) SessionSnapshot {
 	}
 }
 
-func (m *Manager) Snapshots() []SessionSnapshot {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	out := make([]SessionSnapshot, 0, len(m.agents))
-	for id, a := range m.agents {
-		s := a.session
-		if s == nil {
-			out = append(out, SessionSnapshot{AgentID: id, SessionID: SessionID(id), State: StateIdle})
-			continue
-		}
-		out = append(out, SessionSnapshot{
-			AgentID:    id,
-			SessionID:  s.ID,
-			Generation: s.Generation,
-			State:      s.State,
-			PID:        s.PID,
-			StartedAt:  s.StartedAt,
-			ExitedAt:   s.ExitedAt,
-		})
-	}
-	return out
-}
-
-func (m *Manager) Get(id AgentID) (*Agent, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.agents[id]
-	return a, ok
-}
-
-func (m *Manager) GetAgents() map[AgentID]*Agent {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	out := make(map[AgentID]*Agent, len(m.agents))
-	for id, a := range m.agents {
-		out[id] = a
-	}
-	return out
-}
-
-func (m *Manager) monitor(a *Agent, s *session) {
+func (m *Manager) monitor(a *agent, s *session) {
 	res := m.driver.Wait(s.h)
 	m.finish(a, s, res.ExitErr)
 }
 
-func (m *Manager) finish(a *Agent, s *session, waitErr error) {
+func (m *Manager) finish(a *agent, s *session, waitErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
