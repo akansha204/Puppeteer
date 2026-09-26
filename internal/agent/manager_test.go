@@ -700,6 +700,45 @@ func TestRestartRecoversFromFailedStop(t *testing.T) {
 	}
 }
 
+// A shallow spec copy would let caller-owned Args/Env slices leak into the
+// stored spec, silently changing what a later Restart launches.
+func TestStartCopiesSpecSlices(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+	spec := AgentSpec{ID: "copy", Command: "sleep", Args: []string{"1000"}, Env: []string{"FOO=bar"}}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	spec.Args[0] = "9999"
+	spec.Env[0] = "FOO=mutated"
+
+	if err := m.Restart(spec.ID); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	got, _ := m.Get(spec.ID)
+
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", got.PID))
+	if err != nil {
+		t.Fatalf("read cmdline: %v", err)
+	}
+	if !strings.Contains(string(cmdline), "sleep\x001000") {
+		t.Fatalf("restart relaunched with mutated args: %q", cmdline)
+	}
+
+	env, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", got.PID))
+	if err != nil {
+		t.Fatalf("read environ: %v", err)
+	}
+	if !strings.Contains(string(env), "FOO=bar\x00") {
+		t.Fatalf("restart lost the original env: %q", env)
+	}
+	if strings.Contains(string(env), "FOO=mutated\x00") {
+		t.Fatalf("restart picked up mutated env: %q", env)
+	}
+}
+
 func TestPTYAgentInteracts(t *testing.T) {
 	m := NewManager(driver.NewPTYDriver())
 	spec := AgentSpec{ID: "shell", Command: "sh"}

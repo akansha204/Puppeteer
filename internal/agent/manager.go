@@ -23,6 +23,7 @@ func NewManager(d driver.Driver) *Manager {
 }
 
 func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
+	spec = cloneSpec(spec)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

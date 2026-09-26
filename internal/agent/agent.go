@@ -29,6 +29,15 @@ type AgentSpec struct {
 	Env     []string
 }
 
+// cloneSpec copies the spec and its slices, so the stored spec never aliases
+// the caller's backing arrays.
+func cloneSpec(spec AgentSpec) AgentSpec {
+	out := spec
+	out.Args = append([]string(nil), spec.Args...)
+	out.Env = append([]string(nil), spec.Env...)
+	return out
+}
+
 type session struct {
 	ID         SessionID
 	Generation uint64
