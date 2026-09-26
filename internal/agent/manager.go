@@ -124,14 +124,18 @@ func (m *Manager) Stop(id AgentID) error {
 func (m *Manager) Restart(id AgentID) error {
 	m.mu.Lock()
 	a := m.agents[id]
-	m.mu.Unlock()
 	if a == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("no agent %q", id)
 	}
+	spec := cloneSpec(a.spec)
+	m.mu.Unlock()
+
 	if err := m.Stop(id); err != nil {
 		return err
 	}
-	_, err := m.Start(a.spec)
+
+	_, err := m.Start(spec)
 	return err
 }
 
