@@ -100,11 +100,20 @@ func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
 // Resize publishes a new window size to the process (SIGWINCH). Held under
 // the state lock so it never resizes a master Wait is closing.
 func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
+	if rows == 0 || cols == 0 {
+		return fmt.Errorf("terminal rows and columns must be > 0")
+	}
+
+	// Held across Setsize so Wait cannot close the master mid-call.
 	h.stateMu.RLock()
 	defer h.stateMu.RUnlock()
 
 	if h.master == nil {
-		return nil
+		return fmt.Errorf("%w: process %d has no PTY", ErrClosed, h.PID)
 	}
-	return pty.Setsize(h.master, &pty.Winsize{Rows: rows, Cols: cols})
+
+	return pty.Setsize(h.master, &pty.Winsize{
+		Rows: rows,
+		Cols: cols,
+	})
 }
