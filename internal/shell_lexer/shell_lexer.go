@@ -49,7 +49,11 @@ func Fields(s string) ([]string, error) {
 			default:
 				w.WriteByte(c)
 			}
-		case c == '\\' && i+1 < len(s):
+		case quote == 0 && c == '\\':
+			if i+1 >= len(s) {
+				return nil, fmt.Errorf("trailing backslash")
+			}
+
 			i++
 			w.WriteByte(s[i])
 		case c == '\'' || c == '"':

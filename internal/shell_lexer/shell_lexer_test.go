@@ -21,6 +21,7 @@ func TestFieldsQuoting(t *testing.T) {
 		{in: "a \"b\\\\c\"", want: []string{"a", `b\c`}},
 		{in: "\"unclosed", wantErr: true},
 		{in: "'unclosed", wantErr: true},
+		{in: `send worker hello\`, wantErr: true},
 	}
 
 	for _, tc := range tests {
