@@ -742,6 +742,20 @@ func TestStartCopiesSpecSlices(t *testing.T) {
 	}
 }
 
+func TestStartRejectsEmptyFields(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+
+	if _, err := m.Start(AgentSpec{ID: "", Command: "sleep", Args: []string{"1000"}}); err == nil {
+		t.Fatal("expected empty agent id to be rejected")
+	}
+	if _, err := m.Start(AgentSpec{ID: "nope", Command: "   "}); err == nil {
+		t.Fatal("expected an empty command to be rejected")
+	}
+	if len(m.agents) != 0 {
+		t.Fatalf("rejected specs must not register agents, found %d", len(m.agents))
+	}
+}
+
 func TestPTYAgentInteracts(t *testing.T) {
 	m := NewManager(driver.NewPTYDriver())
 	spec := AgentSpec{ID: "shell", Command: "sh"}

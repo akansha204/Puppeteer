@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,28 +29,59 @@ func (m *Manager) nextSessionIDLocked() SessionID {
 	return SessionID(fmt.Sprintf("sess-%d", m.nextSession))
 }
 
+func validateSpec(spec AgentSpec) error {
+	if strings.TrimSpace(string(spec.ID)) == "" {
+		return fmt.Errorf("agent id must not be empty")
+	}
+
+	if strings.TrimSpace(spec.Command) == "" {
+		return fmt.Errorf("agent %q command must not be empty", spec.ID)
+	}
+
+	return nil
+}
+
 func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
+	if err := validateSpec(spec); err != nil {
+		return SessionSnapshot{}, err
+	}
+
 	spec = cloneSpec(spec)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if a, ok := m.agents[spec.ID]; ok {
-		if s := a.session; s != nil && (s.State == StateRunning || s.State == StateStarting || s.State == StateStopping) {
-			return SessionSnapshot{}, fmt.Errorf("agent %q is already %s", spec.ID, s.State)
+	a := m.agents[spec.ID]
+	if a != nil {
+		if s := a.session; s != nil &&
+			(s.State == StateRunning ||
+				s.State == StateStarting ||
+				s.State == StateStopping) {
+			return SessionSnapshot{}, fmt.Errorf(
+				"agent %q is already %s",
+				spec.ID,
+				s.State,
+			)
 		}
 	}
 
+	sessionID := SessionID("")
 	var gen uint64
-	sid := m.nextSessionIDLocked()
-	if a := m.agents[spec.ID]; a != nil {
+
+	if a == nil {
+		sessionID = m.nextSessionIDLocked()
+	} else {
+		sessionID = a.sessionID
 		if a.session != nil {
 			gen = a.session.Generation
 		}
-		if a.sessionID != "" {
-			sid = a.sessionID
-		}
 	}
-	s := &session{ID: sid, Generation: gen + 1, State: StateStarting}
+
+	s := &session{
+		ID:         sessionID,
+		Generation: gen + 1,
+		State:      StateStarting,
+	}
 
 	h, err := m.driver.Start(context.Background(), driver.Spec{
 		Path: spec.Command,
@@ -67,13 +99,14 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	s.done = make(chan struct{})
 	s.State = StateRunning
 
-	a := m.agents[spec.ID]
 	if a == nil {
-		a = &agent{spec: spec, sessionID: sid}
+		a = &agent{sessionID: sessionID}
 		m.agents[spec.ID] = a
 	}
+
 	a.spec = spec
 	a.session = s
+
 	go m.monitor(a, s)
 
 	return snapshotOf(a), nil
