@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const defaultGrace = 3 * time.Second
+const (
+	defaultGrace = 3 * time.Second
+	killTimeout  = 2 * time.Second
+)
 
 type Command struct {
 	Path string
@@ -77,9 +80,18 @@ func (d *ProcessDriver) Stop(h *Handle) error {
 
 	select {
 	case <-h.done:
+		return nil
 	case <-time.After(grace):
-		_ = syscall.Kill(pgid, syscall.SIGKILL)
-		<-h.done
 	}
-	return nil
+
+	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill process group: %w", err)
+	}
+
+	select {
+	case <-h.done:
+		return nil
+	case <-time.After(killTimeout):
+		return fmt.Errorf("process group %d did not terminate after SIGKILL", h.PID)
+	}
 }
