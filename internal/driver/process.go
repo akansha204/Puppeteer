@@ -41,6 +41,7 @@ type Handle struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser // optional; Write feeds the process here
 	stdout io.ReadCloser  // optional; Read drains the process here
+	master *os.File       // optional; the PTY master when on a terminal
 }
 
 type Driver interface {
@@ -122,6 +123,10 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	h.cmd = nil
 	h.stdin = nil
 	h.stdout = nil
+	if h.master != nil {
+		h.master.Close()
+		h.master = nil
+	}
 	close(h.done)
 
 	res := ExitResult{Err: err}
