@@ -3,6 +3,7 @@ package driver
 import (
 	"errors"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -17,7 +18,7 @@ func TestStartSpawnsAndStopTerminates(t *testing.T) {
 		t.Fatal("expected a real PID")
 	}
 
-	done := make(chan Result, 1)
+	done := make(chan ExitResult, 1)
 	go func() { done <- d.Wait(h) }()
 
 	if err := d.Stop(h); err != nil {
@@ -25,8 +26,11 @@ func TestStartSpawnsAndStopTerminates(t *testing.T) {
 	}
 	res := <-done
 	var exitErr *exec.ExitError
-	if !errors.As(res.ExitErr, &exitErr) {
-		t.Fatalf("ExitErr = %T, want *exec.ExitError", res.ExitErr)
+	if !errors.As(res.Err, &exitErr) {
+		t.Fatalf("Err = %T, want *exec.ExitError", res.Err)
+	}
+	if res.Signal != syscall.SIGTERM {
+		t.Fatalf("Signal = %v, want SIGTERM", res.Signal)
 	}
 }
 
@@ -37,8 +41,14 @@ func TestWaitReportsNonZeroExit(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	res := d.Wait(h)
-	if res.ExitErr == nil {
+	if res.Err == nil {
 		t.Fatal("expected non-zero exit to be reported as an error")
+	}
+	if res.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", res.ExitCode)
+	}
+	if res.Signal != -1 {
+		t.Fatalf("Signal = %v, want -1 for a plain exit", res.Signal)
 	}
 }
 

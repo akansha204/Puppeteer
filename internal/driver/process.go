@@ -19,8 +19,14 @@ type Command struct {
 	Args []string
 }
 
-type Result struct {
-	ExitErr error
+// ExitResult describes how a process actually died, independent of why the
+// caller might have wanted it to die. For a normal exit Err is nil, ExitCode
+// is the status and Signal is -1; for a signal death Err is non-nil, Signal is
+// the fatal signal and ExitCode is -1.
+type ExitResult struct {
+	Err      error
+	ExitCode int
+	Signal   syscall.Signal
 }
 
 type Handle struct {
@@ -33,7 +39,7 @@ type Handle struct {
 
 type Driver interface {
 	Start(Command) (*Handle, error)
-	Wait(h *Handle) Result
+	Wait(h *Handle) ExitResult
 	Stop(h *Handle) error
 }
 
@@ -59,12 +65,21 @@ func (d *ProcessDriver) Start(c Command) (*Handle, error) {
 	}, nil
 }
 
-func (d *ProcessDriver) Wait(h *Handle) Result {
+func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	err := h.cmd.Wait()
 	h.proc = nil
 	h.cmd = nil
 	close(h.done)
-	return Result{ExitErr: err}
+
+	res := ExitResult{Err: err}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+			res.ExitCode = ws.ExitStatus()
+			res.Signal = ws.Signal()
+		}
+	}
+	return res
 }
 
 func (d *ProcessDriver) Stop(h *Handle) error {
