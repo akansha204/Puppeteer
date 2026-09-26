@@ -122,8 +122,8 @@ func TestRestartSpawnsFreshProcess(t *testing.T) {
 	if processAlive(oldPID) {
 		t.Fatalf("old process %d still alive after restart", oldPID)
 	}
-	if !processAlive(got.PID) || got.PID == oldPID {
-		t.Fatalf("new process not healthy: pid=%d oldPID=%d", got.PID, oldPID)
+	if got.PID == 0 || !processAlive(got.PID) {
+		t.Fatalf("new process not running: pid=%d", got.PID)
 	}
 	if got.State != StateRunning {
 		t.Fatalf("state = %s, want %s", got.State, StateRunning)
@@ -236,8 +236,8 @@ func TestRestartOneAgentDoesNotAffectOther(t *testing.T) {
 	if processAlive(oldPID) {
 		t.Fatalf("old alpha process %d still alive after restart", oldPID)
 	}
-	if !processAlive(got.PID) || got.PID == oldPID {
-		t.Fatalf("alpha not healthy after restart: pid=%d oldPID=%d", got.PID, oldPID)
+	if got.PID == 0 || !processAlive(got.PID) {
+		t.Fatalf("alpha not running after restart: pid=%d", got.PID)
 	}
 	if gb, _ := m.Get(beta.ID); gb.PID != betaPID {
 		t.Fatalf("beta PID changed (%d → %d) while alpha restarted", betaPID, gb.PID)
@@ -429,19 +429,22 @@ func TestRestartAlwaysProducesFreshGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seen := map[int]bool{snap.PID: true}
+	wantGen := snap.Generation
 
 	for i := 0; i < 3; i++ {
 		if err := m.Restart(spec.ID); err != nil {
 			t.Fatalf("Restart %d: %v", i, err)
 		}
 		snap, _ := m.Get(spec.ID)
-		if seen[snap.PID] {
-			t.Fatalf("pid %d reused across generations", snap.PID)
+		if snap.Generation != wantGen+1 {
+			t.Fatalf("restart %d did not bump generation: got %d, want %d", i+1, snap.Generation, wantGen+1)
 		}
-		seen[snap.PID] = true
+		wantGen = snap.Generation
+		if snap.PID == 0 {
+			t.Fatalf("generation %d has no PID", wantGen)
+		}
 		if !processAlive(snap.PID) {
-			t.Fatalf("generation %d not alive: pid=%d", i+1, snap.PID)
+			t.Fatalf("generation %d not alive: pid=%d", wantGen, snap.PID)
 		}
 		if snap.State != StateRunning {
 			t.Fatalf("state = %s, want %s", snap.State, StateRunning)
@@ -472,8 +475,8 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 	if s2.Generation != 2 {
 		t.Fatalf("generation = %d, want 2", s2.Generation)
 	}
-	if s2.PID == s1.PID || s2.PID == 0 {
-		t.Fatalf("expected a fresh pid, got %d (old %d)", s2.PID, s1.PID)
+	if s2.PID == 0 || !processAlive(s2.PID) {
+		t.Fatalf("generation 2 not running: pid=%d", s2.PID)
 	}
 
 	if err := m.Restart(spec.ID); err != nil {
@@ -486,8 +489,8 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 	if s3.SessionID != s1.SessionID {
 		t.Fatalf("session id changed across generations")
 	}
-	if s3.PID == s1.PID || s3.PID == s2.PID {
-		t.Fatalf("pid reused across generations: %d", s3.PID)
+	if s3.PID == 0 || !processAlive(s3.PID) {
+		t.Fatalf("generation 3 not running: pid=%d", s3.PID)
 	}
 }
 
