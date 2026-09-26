@@ -121,6 +121,59 @@ func (m *Manager) Get(id AgentID) (SessionSnapshot, bool) {
 	return snapshotOf(a), true
 }
 
+func (m *Manager) runningHandle(id AgentID) *driver.Handle {
+	a := m.agents[id]
+	if a == nil {
+		return nil
+	}
+	s := a.session
+	if s == nil || s.State != StateRunning {
+		return nil
+	}
+	return s.h
+}
+
+func (m *Manager) Write(id AgentID, data []byte) (int, error) {
+	m.mu.Lock()
+	h := m.runningHandle(id)
+	m.mu.Unlock()
+	if h == nil {
+		return 0, fmt.Errorf("agent %q has no running session", id)
+	}
+	n, err := m.driver.Write(h, data)
+	if err != nil {
+		return n, fmt.Errorf("write to agent %q: %w", id, err)
+	}
+	return n, nil
+}
+
+func (m *Manager) Read(id AgentID, p []byte) (int, error) {
+	m.mu.Lock()
+	h := m.runningHandle(id)
+	m.mu.Unlock()
+	if h == nil {
+		return 0, fmt.Errorf("agent %q has no running session", id)
+	}
+	n, err := m.driver.Read(h, p)
+	if err != nil {
+		return n, fmt.Errorf("read from agent %q: %w", id, err)
+	}
+	return n, nil
+}
+
+func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
+	m.mu.Lock()
+	h := m.runningHandle(id)
+	m.mu.Unlock()
+	if h == nil {
+		return fmt.Errorf("agent %q has no running session", id)
+	}
+	if err := m.driver.Resize(h, rows, cols); err != nil {
+		return fmt.Errorf("resize agent %q: %w", id, err)
+	}
+	return nil
+}
+
 func (m *Manager) Snapshots() []SessionSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()

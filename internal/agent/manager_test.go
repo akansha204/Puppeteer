@@ -637,6 +637,53 @@ func TestStopSignalClassifiedAsStopped(t *testing.T) {
 	}
 }
 
+func TestPTYAgentInteracts(t *testing.T) {
+	m := NewManager(driver.NewPTYDriver())
+	spec := AgentSpec{ID: "shell", Command: "sh"}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if _, err := m.Write(spec.ID, []byte("echo hello\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	var got strings.Builder
+	buf := make([]byte, 256)
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(got.String(), "hello") && time.Now().Before(deadline) {
+		n, err := m.Read(spec.ID, buf)
+		if err != nil {
+			break
+		}
+		got.Write(buf[:n])
+	}
+	if !strings.Contains(got.String(), "hello") {
+		t.Fatalf("agent output %q does not contain hello", got.String())
+	}
+
+	if err := m.Resize(spec.ID, 30, 90); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	if err := m.Stop(spec.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	snap, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if snap.State != StateStopped {
+		t.Fatalf("state = %s, want %s", snap.State, StateStopped)
+	}
+
+	if _, err := m.Write(spec.ID, []byte("echo no\n")); err == nil {
+		t.Fatal("expected Write on a stopped agent to error")
+	}
+}
+
 func TestStartForwardsCwdToDriver(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
 	dir := t.TempDir()
