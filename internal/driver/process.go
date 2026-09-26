@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -36,6 +37,7 @@ type ExitResult struct {
 type Handle struct {
 	PID int
 
+	mu     sync.Mutex
 	done   chan struct{} //closed by Wait when the process dies
 	proc   *os.Process
 	cmd    *exec.Cmd
@@ -98,6 +100,8 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 }
 
 func (d *ProcessDriver) Write(h *Handle, data []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.stdin == nil {
 		return 0, fmt.Errorf("process %d has no stdin", h.PID)
 	}
@@ -105,6 +109,8 @@ func (d *ProcessDriver) Write(h *Handle, data []byte) (int, error) {
 }
 
 func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.stdout == nil {
 		return 0, fmt.Errorf("process %d has no stdout", h.PID)
 	}
@@ -119,6 +125,7 @@ func (d *ProcessDriver) Resize(_ *Handle, _, _ uint16) error {
 
 func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	err := h.cmd.Wait()
+	h.mu.Lock()
 	h.proc = nil
 	h.cmd = nil
 	h.stdin = nil
@@ -127,6 +134,7 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 		h.master.Close()
 		h.master = nil
 	}
+	h.mu.Unlock()
 	close(h.done)
 
 	res := ExitResult{Err: err}

@@ -72,6 +72,8 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 }
 
 func (d *PTYDriver) Write(h *Handle, data []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.master == nil {
 		return 0, fmt.Errorf("process %d is not on a terminal", h.PID)
 	}
@@ -79,6 +81,8 @@ func (d *PTYDriver) Write(h *Handle, data []byte) (int, error) {
 }
 
 func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.master == nil {
 		return 0, fmt.Errorf("process %d is not on a terminal", h.PID)
 	}
@@ -88,6 +92,8 @@ func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
 // Resize publishes a new terminal window size to the process, which sees the
 // change through SIGWINCH and a fresh termios stty size.
 func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.master == nil {
 		return nil
 	}
