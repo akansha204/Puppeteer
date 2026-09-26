@@ -99,6 +99,8 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, err
 	}
 

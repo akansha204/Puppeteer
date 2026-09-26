@@ -145,6 +145,31 @@ func TestProcessDriverReadOutput(t *testing.T) {
 	}
 }
 
+func TestStartFailureDoesNotLeakDescriptors(t *testing.T) {
+	d := NewProcessDriver()
+	countFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatalf("read /proc/self/fd: %v", err)
+		}
+		return len(entries)
+	}
+
+	before := countFDs()
+	for i := 0; i < 100; i++ {
+		if h, err := d.Start(context.Background(), Spec{Path: "definitely-no-such-binary-pony-test"}); err == nil {
+			_ = h
+			t.Fatal("expected Start to fail for a missing binary")
+		}
+	}
+	after := countFDs()
+
+	const slack = 4
+	if after > before+slack {
+		t.Fatalf("failed starts leaked descriptors: %d -> %d", before, after)
+	}
+}
+
 func TestStopIsBoundedWithoutWait(t *testing.T) {
 	d := &ProcessDriver{Grace: 100 * time.Millisecond}
 	h, err := d.Start(context.Background(), Spec{Path: "sleep", Args: []string{"1000"}})
