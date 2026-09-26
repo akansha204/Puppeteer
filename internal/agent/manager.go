@@ -11,15 +11,21 @@ import (
 )
 
 type Manager struct {
-	mu     sync.Mutex
-	agents map[AgentID]*agent
-	driver driver.Driver
+	mu          sync.Mutex
+	agents      map[AgentID]*agent
+	driver      driver.Driver
+	nextSession uint64
 }
 
 const stopSettle = 2 * time.Second
 
 func NewManager(d driver.Driver) *Manager {
 	return &Manager{agents: make(map[AgentID]*agent), driver: d}
+}
+
+func (m *Manager) nextSessionIDLocked() SessionID {
+	m.nextSession++
+	return SessionID(fmt.Sprintf("sess-%d", m.nextSession))
 }
 
 func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
@@ -34,10 +40,16 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	}
 
 	var gen uint64
-	if a := m.agents[spec.ID]; a != nil && a.session != nil {
-		gen = a.session.Generation
+	sid := m.nextSessionIDLocked()
+	if a := m.agents[spec.ID]; a != nil {
+		if a.session != nil {
+			gen = a.session.Generation
+		}
+		if a.sessionID != "" {
+			sid = a.sessionID
+		}
 	}
-	s := &session{ID: SessionID(spec.ID), Generation: gen + 1, State: StateStarting}
+	s := &session{ID: sid, Generation: gen + 1, State: StateStarting}
 
 	h, err := m.driver.Start(context.Background(), driver.Spec{
 		Path: spec.Command,
@@ -57,7 +69,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 
 	a := m.agents[spec.ID]
 	if a == nil {
-		a = &agent{spec: spec}
+		a = &agent{spec: spec, sessionID: sid}
 		m.agents[spec.ID] = a
 	}
 	a.spec = spec
@@ -231,8 +243,13 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 func snapshotOf(a *agent) SessionSnapshot {
 	s := a.session
 	if s == nil {
-		return SessionSnapshot{AgentID: a.spec.ID, SessionID: SessionID(a.spec.ID), State: StateIdle}
+		return SessionSnapshot{
+			AgentID:   a.spec.ID,
+			SessionID: a.sessionID,
+			State:     StateIdle,
+		}
 	}
+
 	return SessionSnapshot{
 		AgentID:    a.spec.ID,
 		SessionID:  s.ID,

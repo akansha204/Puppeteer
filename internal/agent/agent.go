@@ -52,8 +52,9 @@ type session struct {
 }
 
 type agent struct {
-	spec    AgentSpec
-	session *session
+	spec      AgentSpec
+	sessionID SessionID
+	session   *session
 }
 
 type SessionSnapshot struct {

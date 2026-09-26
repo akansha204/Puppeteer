@@ -465,6 +465,9 @@ func TestSessionStableAcrossGenerations(t *testing.T) {
 	if s1.Generation != 1 {
 		t.Fatalf("generation = %d, want 1", s1.Generation)
 	}
+	if string(s1.SessionID) == string(s1.AgentID) {
+		t.Fatalf("session identity must be independent of the agent id: %s == %s", s1.SessionID, s1.AgentID)
+	}
 
 	if err := m.Restart(spec.ID); err != nil {
 		t.Fatalf("Restart: %v", err)
