@@ -41,6 +41,18 @@ var (
 	ErrUnsupported = errors.New("operation unsupported by driver")
 )
 
+// mergedEnv keeps the host environment and layers the overrides on top, so
+// a non-nil spec.Env augments rather than replaces PATH, HOME, and friends.
+func mergedEnv(overrides []string) []string {
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	env := append([]string(nil), os.Environ()...)
+	env = append(env, overrides...)
+	return env
+}
+
 type Handle struct {
 	PID int
 
@@ -86,7 +98,7 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Cwd
-	cmd.Env = spec.Env
+	cmd.Env = mergedEnv(spec.Env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()

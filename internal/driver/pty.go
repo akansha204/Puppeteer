@@ -42,7 +42,7 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Cwd
-	cmd.Env = spec.Env
+	cmd.Env = mergedEnv(spec.Env)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave

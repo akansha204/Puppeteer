@@ -145,6 +145,37 @@ func TestProcessDriverReadOutput(t *testing.T) {
 	}
 }
 
+func TestEnvOverridesDoNotReplaceHostEnv(t *testing.T) {
+	d := NewProcessDriver()
+	h, err := d.Start(context.Background(), Spec{
+		Path: "sh",
+		Args: []string{"-c", "env"},
+		Env:  []string{"PONY_OVERRIDE=1"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var got strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := d.Read(h, buf)
+		got.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	d.Wait(h)
+
+	out := got.String()
+	if !strings.Contains(out, "PONY_OVERRIDE=1") {
+		t.Fatalf("override missing from env:\n%s", out)
+	}
+	if !strings.Contains(out, "PATH=") {
+		t.Fatalf("host PATH was replaced by the overrides:\n%s", out)
+	}
+}
+
 func TestStartFailureDoesNotLeakDescriptors(t *testing.T) {
 	d := NewProcessDriver()
 	countFDs := func() int {
