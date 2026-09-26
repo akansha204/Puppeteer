@@ -1,8 +1,10 @@
 package driver
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -14,9 +16,11 @@ const (
 	killTimeout  = 2 * time.Second
 )
 
-type Command struct {
+type Spec struct {
 	Path string
 	Args []string
+	Cwd  string
+	Env  []string
 }
 
 // ExitResult describes how a process actually died, independent of why the
@@ -32,15 +36,18 @@ type ExitResult struct {
 type Handle struct {
 	PID int
 
-	done chan struct{} //closed by Wait when the process dies
-	proc *os.Process
-	cmd  *exec.Cmd
+	done  chan struct{} //closed by Wait when the process dies
+	proc  *os.Process
+	cmd   *exec.Cmd
+	stdin io.WriteCloser // optional; Write feeds the process here
 }
 
 type Driver interface {
-	Start(Command) (*Handle, error)
+	Start(ctx context.Context, spec Spec) (*Handle, error)
+	Write(h *Handle, data []byte) (int, error)
+	Resize(h *Handle, rows, cols uint16) error
+	Stop(ctx context.Context, h *Handle) error
 	Wait(h *Handle) ExitResult
-	Stop(h *Handle) error
 }
 
 type ProcessDriver struct {
@@ -51,24 +58,54 @@ func NewProcessDriver() *ProcessDriver {
 	return &ProcessDriver{Grace: defaultGrace}
 }
 
-func (d *ProcessDriver) Start(c Command) (*Handle, error) {
-	cmd := exec.Command(c.Path, c.Args...)
+func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
+	cmd.Dir = spec.Cwd
+	cmd.Env = spec.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+
 	return &Handle{
-		PID:  cmd.Process.Pid,
-		done: make(chan struct{}),
-		proc: cmd.Process,
-		cmd:  cmd,
+		PID:   cmd.Process.Pid,
+		done:  make(chan struct{}),
+		proc:  cmd.Process,
+		cmd:   cmd,
+		stdin: stdin,
 	}, nil
+}
+
+func (d *ProcessDriver) Write(h *Handle, data []byte) (int, error) {
+	if h.stdin == nil {
+		return 0, fmt.Errorf("process %d has no stdin", h.PID)
+	}
+	return h.stdin.Write(data)
+}
+
+// Resize is a no-op for a plain process: a window size is only meaningful
+// once a PTY driver puts the process on a terminal (TIOCSWINSZ)(Set this terminal's window size).
+func (d *ProcessDriver) Resize(_ *Handle, _, _ uint16) error {
+	return nil
 }
 
 func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	err := h.cmd.Wait()
 	h.proc = nil
 	h.cmd = nil
+	h.stdin = nil
 	close(h.done)
 
 	res := ExitResult{Err: err}
@@ -82,7 +119,13 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	return res
 }
 
-func (d *ProcessDriver) Stop(h *Handle) error {
+// Stop escalates SIGTERM to SIGKILL against the whole process group. A
+// cancelled context bounds the wait but never abandons the group half-signalled.
+func (d *ProcessDriver) Stop(ctx context.Context, h *Handle) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	grace := d.Grace
 	if grace <= 0 {
 		grace = defaultGrace
@@ -97,6 +140,7 @@ func (d *ProcessDriver) Stop(h *Handle) error {
 	case <-h.done:
 		return nil
 	case <-time.After(grace):
+	case <-ctx.Done():
 	}
 
 	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -108,5 +152,7 @@ func (d *ProcessDriver) Stop(h *Handle) error {
 		return nil
 	case <-time.After(killTimeout):
 		return fmt.Errorf("process group %d did not terminate after SIGKILL", h.PID)
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

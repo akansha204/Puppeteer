@@ -1,8 +1,12 @@
 package driver
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -10,7 +14,7 @@ import (
 
 func TestStartSpawnsAndStopTerminates(t *testing.T) {
 	d := NewProcessDriver()
-	h, err := d.Start(Command{Path: "sleep", Args: []string{"1000"}})
+	h, err := d.Start(context.Background(), Spec{Path: "sleep", Args: []string{"1000"}})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -21,7 +25,7 @@ func TestStartSpawnsAndStopTerminates(t *testing.T) {
 	done := make(chan ExitResult, 1)
 	go func() { done <- d.Wait(h) }()
 
-	if err := d.Stop(h); err != nil {
+	if err := d.Stop(context.Background(), h); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	res := <-done
@@ -36,7 +40,7 @@ func TestStartSpawnsAndStopTerminates(t *testing.T) {
 
 func TestWaitReportsNonZeroExit(t *testing.T) {
 	d := NewProcessDriver()
-	h, err := d.Start(Command{Path: "sh", Args: []string{"-c", "exit 7"}})
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", "exit 7"}})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -52,15 +56,75 @@ func TestWaitReportsNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestWriteFeedsStdin(t *testing.T) {
+	d := NewProcessDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", `read -r line; [ "$line" = "ping" ]`}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	n, err := d.Write(h, []byte("ping\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len("ping\n") {
+		t.Fatalf("wrote %d bytes, want %d", n, len("ping\n"))
+	}
+
+	res := d.Wait(h)
+	if res.Err != nil {
+		t.Fatalf("process should exit 0 after reading its line: %v", res.Err)
+	}
+}
+
+func TestStartAppliesCwdAndEnv(t *testing.T) {
+	d := NewProcessDriver()
+	dir := t.TempDir()
+	h, err := d.Start(context.Background(), Spec{
+		Path: "sleep",
+		Args: []string{"1000"},
+		Cwd:  dir,
+		Env:  []string{"PATH=" + os.Getenv("PATH"), "PONY_VAL=1"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		done := make(chan struct{})
+		go func() {
+			d.Wait(h)
+			close(done)
+		}()
+		_ = d.Stop(context.Background(), h)
+		<-done
+	})
+
+	got, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", h.PID))
+	if err != nil {
+		t.Fatalf("read cwd: %v", err)
+	}
+	if got != dir {
+		t.Fatalf("cwd = %q, want %q", got, dir)
+	}
+
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", h.PID))
+	if err != nil {
+		t.Fatalf("read environ: %v", err)
+	}
+	if !strings.Contains(string(data), "PONY_VAL=1") {
+		t.Fatal("PONY_VAL=1 not present in the process environment")
+	}
+}
+
 func TestStopIsBoundedWithoutWait(t *testing.T) {
 	d := &ProcessDriver{Grace: 100 * time.Millisecond}
-	h, err := d.Start(Command{Path: "sleep", Args: []string{"1000"}})
+	h, err := d.Start(context.Background(), Spec{Path: "sleep", Args: []string{"1000"}})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	started := time.Now()
-	err = d.Stop(h)
+	err = d.Stop(context.Background(), h)
 	elapsed := time.Since(started)
 
 	bound := d.Grace + killTimeout + time.Second
