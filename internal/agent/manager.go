@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/akansha204/pony/internal/driver"
@@ -25,7 +26,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	defer m.mu.Unlock()
 
 	if a, ok := m.agents[spec.ID]; ok {
-		if s := a.session; s != nil && (s.State == StateRunning || s.State == StateStarting) {
+		if s := a.session; s != nil && (s.State == StateRunning || s.State == StateStarting || s.State == StateStopping) {
 			return SessionSnapshot{}, fmt.Errorf("agent %q is already %s", spec.ID, s.State)
 		}
 	}
@@ -71,7 +72,8 @@ func (m *Manager) Stop(id AgentID) error {
 		m.mu.Unlock()
 		return nil
 	}
-	s.stopping = true
+	s.stopReq = true
+	s.State = StateStopping
 	sd, h := s.done, s.h
 	m.mu.Unlock()
 
@@ -142,10 +144,10 @@ func snapshotOf(a *agent) SessionSnapshot {
 
 func (m *Manager) monitor(a *agent, s *session) {
 	res := m.driver.Wait(s.h)
-	m.finish(a, s, res.ExitErr)
+	m.finish(a, s, res)
 }
 
-func (m *Manager) finish(a *agent, s *session, waitErr error) {
+func (m *Manager) finish(a *agent, s *session, res driver.ExitResult) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -154,15 +156,22 @@ func (m *Manager) finish(a *agent, s *session, waitErr error) {
 	}
 
 	switch {
-	case s.stopping:
+	case res.Err == nil:
 		s.State = StateStopped
-	case waitErr != nil:
-		s.State = StateCrashed
+	case s.stopReq && isTerminationSignal(res.Signal):
+		s.State = StateStopped
 	default:
-		s.State = StateStopped
+		s.State = StateCrashed
 	}
 	s.ExitedAt = time.Now()
 	s.PID = 0
 	s.h = nil
 	close(s.done)
+}
+
+// isTerminationSignal reports whether a process died from the signals Stop
+// delivers. A crash that merely overlaps with a stop request keeps its crash
+// classification instead of being masked as a clean stop.
+func isTerminationSignal(sig syscall.Signal) bool {
+	return sig == syscall.SIGTERM || sig == syscall.SIGKILL
 }

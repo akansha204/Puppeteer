@@ -522,8 +522,8 @@ func TestStaleSessionCannotMutateNewState(t *testing.T) {
 		t.Fatal("expected a new session for the new generation")
 	}
 
-	m.finish(flip, old, nil)
-	m.finish(flip, old, fmt.Errorf("exit status 1"))
+	m.finish(flip, old, driver.ExitResult{})
+	m.finish(flip, old, driver.ExitResult{Err: fmt.Errorf("exit status 1")})
 
 	snap, ok := m.Get(spec.ID)
 	if !ok {
@@ -562,5 +562,76 @@ func TestSnapshotIsACopy(t *testing.T) {
 		t.Fatalf("mutating a snapshot leaked into live state: %s", got.State)
 	} else if got.PID == 999999 || got.Generation == 77 {
 		t.Fatalf("mutating a snapshot leaked into live metadata")
+	}
+}
+
+// A stop request that merely overlaps a crash must not reclassify the crash
+// as a clean stop. The crash result wins regardless of user intent.
+func TestCrashSurvivesOverlappingStopRequest(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+	spec := AgentSpec{ID: "boom", Command: "sleep", Args: []string{"1000"}}
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := m.agents[spec.ID]
+	s1 := a.session
+	t.Cleanup(func() { _ = m.driver.Stop(s1.h) })
+
+	// A newer incarnation whose process crashed (exit 3) while a stop
+	// request was in flight. finish must prefer the crash.
+	s2 := &session{
+		ID:         s1.ID,
+		Generation: s1.Generation + 1,
+		State:      StateRunning,
+		done:       make(chan struct{}),
+		stopReq:    true,
+	}
+	a.session = s2
+
+	m.finish(a, s2, driver.ExitResult{Err: fmt.Errorf("exit status 3"), ExitCode: 3})
+
+	snap, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if snap.Generation != s1.Generation+1 {
+		t.Fatalf("generation = %d, want %d", snap.Generation, s1.Generation+1)
+	}
+	if snap.State != StateCrashed {
+		t.Fatalf("state = %s, want %s: a crash must not be masked by an overlapping stop request", snap.State, StateCrashed)
+	}
+}
+
+// A death by one of Stop's own signals, with a stop requested, is a clean
+// stop and must keep that classification.
+func TestStopSignalClassifiedAsStopped(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+	spec := AgentSpec{ID: "clean", Command: "sleep", Args: []string{"1000"}}
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := m.agents[spec.ID]
+	s1 := a.session
+	t.Cleanup(func() { _ = m.driver.Stop(s1.h) })
+
+	s2 := &session{
+		ID:         s1.ID,
+		Generation: s1.Generation + 1,
+		State:      StateRunning,
+		done:       make(chan struct{}),
+		stopReq:    true,
+	}
+	a.session = s2
+
+	m.finish(a, s2, driver.ExitResult{Err: fmt.Errorf("exit status %d", -int(syscall.SIGTERM)), Signal: syscall.SIGTERM})
+
+	snap, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent missing")
+	}
+	if snap.State != StateStopped {
+		t.Fatalf("state = %s, want %s", snap.State, StateStopped)
 	}
 }
